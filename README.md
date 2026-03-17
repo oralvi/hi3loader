@@ -15,8 +15,6 @@ A small desktop launcher that quietly talks to games, pulls down the dispatch/au
 ## 🛠️ Getting started
 
 ### Prerequisites
--
-### Prerequisites
 
 - Go (1.26+ recommended)
 - Node.js (for the frontend build)

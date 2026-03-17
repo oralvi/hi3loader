@@ -1,9 +1,8 @@
 # HI3LOADER
 
-A small desktop launcher that quietly talks to games, pulls down the dispatch/auth tokens it needs, and wraps the whole thing in a tiny GUI — without dragging a bunch of build artifacts and caches into version control.
+A small desktop launcher that quietly talks to games, pulls down what it needs, and wraps the whole thing in a tiny GUI — without dragging a bunch of build artifacts and caches into version control.
 
-> Think of it like a polite butler: it fetches the token for you, starts the game, and keeps the repo clean by ignoring all the smoke-and-mirrors build junk.
-
+Inspired by Haocen2004’s [bh3_login_simulation-memories](https://github.com/HonkaiScanner/bh3_login_simulation-memories).
 ---
 
 ## ⚙️ What it does
@@ -53,4 +52,3 @@ That keeps the repository focused on the real source: Go code, the tiny frontend
 ## 📦 License
 
 This project is released under the **MIT License** (see `LICENSE`).
-

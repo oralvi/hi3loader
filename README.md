@@ -3,6 +3,8 @@
 A small desktop launcher that quietly talks to games, pulls down what it needs, and wraps the whole thing in a tiny GUI — without dragging a bunch of build artifacts and caches into version control.
 
 Inspired by Haocen2004’s [bh3_login_simulation-memories](https://github.com/HonkaiScanner/bh3_login_simulation-memories).
+
+---
 ---
 
 ## ⚙️ What it does

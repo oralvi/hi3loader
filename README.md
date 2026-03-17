@@ -1,42 +1,55 @@
-# Go Rewrite
+# HI3LOADER
 
-`go_rewrite` 是对 `target.exe` 的完整 Go 重写目录。
+A small desktop launcher that quietly talks to games, pulls down the dispatch/auth tokens it needs, and wraps the whole thing in a tiny GUI — without dragging a bunch of build artifacts and caches into version control.
 
-当前包含：
+> Think of it like a polite butler: it fetches the token for you, starts the game, and keeps the repo clean by ignoring all the smoke-and-mirrors build junk.
 
-- 重新按字节码还原后的 B 站登录、米哈游验证、扫码确认流程
-- 本地验证码回调服务
-- 剪贴板二维码解析
-- 当前活动窗口截图并识别二维码
-- Wails 桌面前端
-- 命令行入口 `cmd/bh3cli`
+---
 
-主要目录：
+## ⚙️ What it does
 
-- `cmd/bh3cli`：命令行入口
-- `internal/service`：统一服务层，CLI 和 GUI 共用
-- `internal/bsgamesdk`：B 站登录协议
-- `internal/mihoyosdk`：米哈游验证与扫码协议
-- `internal/captcha`：本地验证码服务与内置模板
-- `internal/qr`：二维码解析
-- `frontend`：Wails 前端
+- Uses a light Wails-based GUI to provide one-click actions (launch game, etc.)
+- Keeps state/config in a small JSON file and emits a log for debugging
+- Ignores build output, caches, and generated assets so the repo stays lean
 
-常用命令：
+## 🛠️ Getting started
+
+### Prerequisites
+- Go (1.26+ recommended)
+- Node.js (for the frontend build)
+- `wails` CLI installed (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`)
+
+### Run in development
 
 ```powershell
-cd go_rewrite
-go build ./...
-go run .\cmd\bh3cli state
-go run .\cmd\bh3cli version
-npm install --prefix .\frontend
-C:\Users\rin\go\bin\wails.exe build
+cd <repo root>
+# install frontend deps
+cd frontend
+npm install
+
+# run dev mode
+cd ..
+wails dev
 ```
 
-产物：
+### Build release
 
-- GUI 可执行文件：`build/bin/hi3loader_rebuilt.exe`
+```powershell
+cd <repo root>
+wails build
+```
 
-说明：
+## 🧹 Why the `.gitignore` matters
 
-- 我保留了原程序的登录与扫码后端能力，但没有复刻原样本里验证码页向第三方站点上报图片的那段逻辑。
-- 本地验证码服务改为绑定 `127.0.0.1:12983`，不再暴露到 `0.0.0.0`。
+This repo intentionally ignores:
+
+- build outputs (`build/`, `dist/`, `frontend/dist/`)
+- Go build cache, module cache, and compiled binaries (`pkg/`, `bin/`)
+- node_modules, temp files, logs, and other generated junk
+
+That keeps the repository focused on the real source: Go code, the tiny frontend, and the integration glue.
+
+## 📦 License
+
+This project is released under the **MIT License** (see `LICENSE`).
+

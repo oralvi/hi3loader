@@ -12,11 +12,11 @@ $env:GOCACHE = Join-Path $root ".gocache-release"
 
 go run github.com/wailsapp/wails/v2/cmd/wails@v2.11.0 build `
   -clean `
-  -o "HI3 Scanner 1.0.0"
+  -o "HI3 loader 1.0.0"
 
 $binDir = Join-Path $root "build\\bin"
-$plainOutput = Join-Path $binDir "HI3 Scanner 1.0.0"
-$exeOutput = Join-Path $binDir "HI3 Scanner 1.0.0.exe"
+$plainOutput = Join-Path $binDir "HI3 loader 1.0.0"
+$exeOutput = Join-Path $binDir "HI3 loader 1.0.0.exe"
 if ((Test-Path $plainOutput) -and -not (Test-Path $exeOutput)) {
-  Rename-Item $plainOutput "HI3 Scanner 1.0.0.exe"
+  Rename-Item $plainOutput "HI3 loader 1.0.0.exe"
 }

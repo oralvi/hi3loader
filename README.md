@@ -15,6 +15,9 @@ A small desktop launcher that quietly talks to games, pulls down the dispatch/au
 ## 🛠️ Getting started
 
 ### Prerequisites
+-
+### Prerequisites
+
 - Go (1.26+ recommended)
 - Node.js (for the frontend build)
 - `wails` CLI installed (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`)

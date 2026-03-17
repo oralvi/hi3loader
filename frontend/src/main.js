@@ -738,6 +738,32 @@ elements.resetBackgroundBtn.addEventListener("click", async () => {
 });
 
 elements.saveBtn.addEventListener("click", async () => {
+  // Persist HI3UID / BILIHITOKEN explicitly because UpdateConfig does not handle them
+  const hi3uid = elements.hi3uidInput.value || "";
+  const biliHitoken = elements.biliHitokenInput.value || "";
+
+  // Save credentials first (do not trigger dispatch refresh)
+  const hi3Res = await runTask(() => SaveSetting("HI3UID", hi3uid), (st) => ({ saved: true, hi3uid: st?.config?.HI3UID ?? null }), "soft");
+  const biliRes = await runTask(() => SaveSetting("BILIHITOKEN", biliHitoken), (st) => ({ saved: true, biliHitoken: st?.config?.BILIHITOKEN ?? null }), "soft");
+
+  // Debug + audit summary: show what was actually saved (with masking)
+  const savedHI3UID = hi3Res?.config?.HI3UID ?? null;
+  const savedBili = biliRes?.config?.BILIHITOKEN ?? null;
+  const auditParts = [];
+  if (savedHI3UID !== null) {
+    auditParts.push(`HI3UID: ${maskSecret(savedHI3UID)}`);
+  }
+  if (savedBili !== null) {
+    auditParts.push(`BILIHITOKEN: ${maskSecret(savedBili)}`);
+  }
+
+  // If user cleared fields, ensure inputs reflect saved empty values immediately
+  if (hi3uid === "") {
+    elements.hi3uidInput.value = "";
+  }
+  if (biliHitoken === "") {
+    elements.biliHitokenInput.value = "";
+  }
   const state = await runTask(
     () =>
       UpdateConfig(
@@ -753,6 +779,14 @@ elements.saveBtn.addEventListener("click", async () => {
     return;
   }
   renderState(state);
+
+  // Include UpdateConfig result in audit summary
+  if (state) {
+    auditParts.push("其他设置已保存");
+  }
+  if (auditParts.length) {
+    showPayload(`保存审计： ${auditParts.join(", ")}`, "neutral");
+  }
 });
 
 elements.loginBtn.addEventListener("click", async () => {

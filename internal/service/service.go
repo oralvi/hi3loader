@@ -326,9 +326,53 @@ func (s *Service) UpdateConfig(gamePath string, clipCheck, autoClose, autoClip, 
 
 // SaveSetting updates a single config field and persists the config.
 func (s *Service) SaveSetting(key string, value any) (State, error) {
+	// Temporary incoming-audit: write the raw incoming key/value so we can
+	// trace whether frontend actually sent the HI3UID. This is short-lived
+	// debugging instrumentation and can be removed after investigation.
+	if s.fileLog != nil {
+		s.fileLog.Writef("incoming SaveSetting: %s -> %v", key, value)
+	}
+	// Also append a compact text line to logs/save_incoming.log to ensure
+	// we capture the event regardless of logger working directory.
+	func() {
+		f, err := os.OpenFile("logs/save_incoming.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		_, _ = f.WriteString(time.Now().Format(time.RFC3339Nano) + " " + key + " -> " + fmt.Sprint(value) + "\n")
+	}()
+	// capture old value for audit
+	var oldVal string
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	if s.cfg != nil {
+		// read current value into oldVal (best-effort)
+		switch key {
+		case "account":
+			oldVal = s.cfg.Account
+		case "password":
+			oldVal = "<redacted>"
+		case "HI3UID":
+			oldVal = s.cfg.HI3UID
+		case "BILIHITOKEN":
+			oldVal = s.cfg.BILIHITOKEN
+		case "panel_blur":
+			oldVal = fmt.Sprintf("%v", s.cfg.PanelBlur)
+		case "clip_check":
+			oldVal = fmt.Sprintf("%v", s.cfg.ClipCheck)
+		case "auto_clip":
+			oldVal = fmt.Sprintf("%v", s.cfg.AutoClip)
+		case "auto_close":
+			oldVal = fmt.Sprintf("%v", s.cfg.AutoClose)
+		case "background_opacity":
+			oldVal = fmt.Sprintf("%v", s.cfg.BackgroundOpacity)
+		case "game_path":
+			oldVal = s.cfg.GamePath
+		default:
+			oldVal = "<unknown>"
+		}
+	}
+	// modify in-memory config under lock
 	switch key {
 	case "account":
 		s.cfg.Account = strings.TrimSpace(fmt.Sprintf("%v", value))
@@ -362,10 +406,38 @@ func (s *Service) SaveSetting(key string, value any) (State, error) {
 	case "game_path":
 		s.cfg.GamePath = strings.TrimSpace(fmt.Sprintf("%v", value))
 	default:
+		s.mu.Unlock()
 		return s.State(), fmt.Errorf("unknown setting: %s", key)
 	}
-
-	if err := config.Save(s.cfgPath, s.cfg); err != nil {
+	// persist while still holding the lock to avoid races
+	err := config.Save(s.cfgPath, s.cfg)
+	s.mu.Unlock()
+	// Audit log: record setting change (avoid logging sensitive password)
+	if s.fileLog != nil {
+		newVal := ""
+		switch key {
+		case "password":
+			newVal = "<redacted>"
+		case "HI3UID", "BILIHITOKEN", "account", "game_path":
+			newVal = fmt.Sprintf("%v", value)
+		case "panel_blur", "clip_check", "auto_clip", "auto_close":
+			newVal = fmt.Sprintf("%v", value)
+		case "background_opacity":
+			newVal = fmt.Sprintf("%v", value)
+		default:
+			newVal = fmt.Sprintf("%v", value)
+		}
+		// redact long tokens for safety in logs (keep start/end)
+		if key == "BILIHITOKEN" && len(newVal) > 8 {
+			newVal = newVal[:4] + "..." + newVal[len(newVal)-4:]
+		}
+		if oldVal == "<redacted>" {
+			s.fileLog.Writef("save setting: %s -> %s", key, newVal)
+		} else {
+			s.fileLog.Writef("save setting: %s '%s' -> '%s'", key, oldVal, newVal)
+		}
+	}
+	if err != nil {
 		return s.State(), err
 	}
 
@@ -1321,12 +1393,82 @@ func (s *Service) refreshDispatchData(ctx context.Context) (map[string]any, erro
 		return nil, nil
 	}
 
-	// 自动检测远端包版本变化并在发生变化时尝试更新 BILIHITOKEN
-	// 仅在已有本地记录的 BiliPkgVer（表明用户曾手动触发过一次）且已设置游戏路径与当前 token 时自动尝试。
-	if cfg != nil && cfg.BiliPkgVer != 0 && strings.TrimSpace(cfg.GamePath) != "" && strings.TrimSpace(cfg.BILIHITOKEN) != "" {
+	// 自动检测远端包版本并在需要时尝试补全或更新 BILIHITOKEN/BiliPkgVer/BHVer。
+	// 行为：
+	// - 先尝试从远端获取 GameInfo；若失败则记录日志并跳过。
+	// - 若本地缺少 BHVer/BiliPkgVer/BILIHITOKEN 中的任意字段，尝试补全并保存。
+	// - 若远端版本与本地不同，记录变更并尝试拉取新的 dispatch token 并持久化。
+	if cfg != nil {
 		httpClient := netutil.NewClient()
-		if info, err := bilihitoken.FetchGameInfo(httpClient); err == nil {
-			if info.Version != cfg.BiliPkgVer {
+		info, err := bilihitoken.FetchGameInfo(httpClient)
+		if err != nil {
+			msg := fmt.Sprintf("fetch gameinfo failed: %v", err)
+			s.logf("%s", msg)
+			if s.fileLog != nil {
+				s.fileLog.Writef("%s", msg)
+			}
+		} else {
+			// BHVer 检查与补全
+			if strings.TrimSpace(cfg.BHVer) == "" && info.BHVer != "" {
+				s.mu.Lock()
+				s.cfg.BHVer = info.BHVer
+				_ = config.Save(s.cfgPath, s.cfg)
+				s.mu.Unlock()
+				msg := fmt.Sprintf("filled BHVer=%s from remote", info.BHVer)
+				s.logf("%s", msg)
+				if s.fileLog != nil {
+					s.fileLog.Writef("%s", msg)
+				}
+			} else if info.BHVer != "" && strings.TrimSpace(cfg.BHVer) != "" && info.BHVer != cfg.BHVer {
+				msg := fmt.Sprintf("BHVer changed: %s -> %s", cfg.BHVer, info.BHVer)
+				s.logf("%s", msg)
+				if s.fileLog != nil {
+					s.fileLog.Writef("%s", msg)
+				}
+				s.mu.Lock()
+				s.cfg.BHVer = info.BHVer
+				_ = config.Save(s.cfgPath, s.cfg)
+				s.mu.Unlock()
+			} else if info.BHVer != "" {
+				msg := fmt.Sprintf("BHVer consistent: %s", cfg.BHVer)
+				s.logf("%s", msg)
+				if s.fileLog != nil {
+					s.fileLog.Writef("%s", msg)
+				}
+			}
+
+			// BiliPkgVer 检查与补全
+			if cfg.BiliPkgVer == 0 {
+				if info.Version != 0 {
+					s.mu.Lock()
+					s.cfg.BiliPkgVer = info.Version
+					_ = config.Save(s.cfgPath, s.cfg)
+					s.mu.Unlock()
+					msg := fmt.Sprintf("filled BiliPkgVer=%d from remote", info.Version)
+					s.logf("%s", msg)
+					if s.fileLog != nil {
+						s.fileLog.Writef("%s", msg)
+					}
+				} else {
+					msg := "remote BiliPkgVer unknown; local is 0"
+					s.logf("%s", msg)
+					if s.fileLog != nil {
+						s.fileLog.Writef("%s", msg)
+					}
+				}
+			} else if info.Version != 0 && info.Version == cfg.BiliPkgVer {
+				msg := fmt.Sprintf("BiliPkgVer consistent: %d", cfg.BiliPkgVer)
+				s.logf("%s", msg)
+				if s.fileLog != nil {
+					s.fileLog.Writef("%s", msg)
+				}
+			} else if info.Version != 0 && info.Version != cfg.BiliPkgVer {
+				msg := fmt.Sprintf("BiliPkgVer changed: %d -> %d", cfg.BiliPkgVer, info.Version)
+				s.logf("%s", msg)
+				// 远端版本变化，尝试获取新的 token（仅在能成功获取时保存）
+				if s.fileLog != nil {
+					s.fileLog.Writef("%s", msg)
+				}
 				token, err := bilihitoken.FetchDispatchToken(httpClient, info.APKUrl)
 				if err == nil && strings.TrimSpace(token) != "" {
 					s.mu.Lock()
@@ -1338,17 +1480,60 @@ func (s *Service) refreshDispatchData(ctx context.Context) (map[string]any, erro
 					_ = config.Save(s.cfgPath, s.cfg)
 					s.mu.Unlock()
 					comboToken = s.cfg.BILIHITOKEN
-					s.logf("auto-updated BILIHITOKEN to pkg_ver=%d", info.Version)
+					msg2 := fmt.Sprintf("auto-updated BILIHITOKEN to pkg_ver=%d", info.Version)
+					s.logf("%s", msg2)
+					if s.fileLog != nil {
+						s.fileLog.Writef("%s", msg2)
+					}
 				} else {
-					s.logf("auto-update BILIHITOKEN failed: %v", err)
+					msg2 := fmt.Sprintf("auto-update BILIHITOKEN failed: %v", err)
+					s.logf("%s", msg2)
+					if s.fileLog != nil {
+						s.fileLog.Writef("%s", msg2)
+					}
 					s.mu.Lock()
 					s.lastError = "自动更新 BILIHITOKEN 失败，请手动获取"
 					s.mu.Unlock()
 					s.emitState()
 				}
 			}
-		} else {
-			s.logf("fetch gameinfo failed: %v", err)
+
+			// 若本地缺少 BILIHITOKEN，尝试补全（在有 remote info 且已设置 game path 时尝试）
+			if strings.TrimSpace(cfg.BILIHITOKEN) == "" {
+				if strings.TrimSpace(cfg.GamePath) != "" && info.Version != 0 {
+					token, err := bilihitoken.FetchDispatchToken(httpClient, info.APKUrl)
+					if err == nil && strings.TrimSpace(token) != "" {
+						s.mu.Lock()
+						s.cfg.BILIHITOKEN = token
+						if info.Version != 0 {
+							s.cfg.BiliPkgVer = info.Version
+						}
+						if info.BHVer != "" {
+							s.cfg.BHVer = info.BHVer
+						}
+						_ = config.Save(s.cfgPath, s.cfg)
+						s.mu.Unlock()
+						comboToken = s.cfg.BILIHITOKEN
+						msg := fmt.Sprintf("filled missing BILIHITOKEN via remote fetch; pkg_ver=%d", info.Version)
+						s.logf("%s", msg)
+						if s.fileLog != nil {
+							s.fileLog.Writef("%s", msg)
+						}
+					} else {
+						msg := fmt.Sprintf("failed to fill missing BILIHITOKEN: %v", err)
+						s.logf("%s", msg)
+						if s.fileLog != nil {
+							s.fileLog.Writef("%s", msg)
+						}
+					}
+				} else {
+					msg := "BILIHITOKEN missing and GamePath not set or remote version unknown; skipping auto-fill"
+					s.logf("%s", msg)
+					if s.fileLog != nil {
+						s.fileLog.Writef("%s", msg)
+					}
+				}
+			}
 		}
 	}
 

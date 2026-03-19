@@ -43,10 +43,6 @@ func (a *App) Bootstrap() (service.State, error) {
 	return a.svc.Bootstrap(context.Background())
 }
 
-func (a *App) State() service.State {
-	return a.svc.State()
-}
-
 func (a *App) LogSnapshot() []service.LogEntry {
 	return a.svc.LogSnapshot()
 }
@@ -109,10 +105,6 @@ func (a *App) BackgroundDataURL() string {
 
 func (a *App) ResetBackground() (service.State, error) {
 	return a.svc.ResetBackground()
-}
-
-func (a *App) OpenCaptcha() error {
-	return a.svc.OpenCaptchaURL()
 }
 
 func (a *App) ScanTicket(ticket string) (service.ScanResult, error) {

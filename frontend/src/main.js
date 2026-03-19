@@ -607,6 +607,10 @@ function refreshDraftActionState(cfg = latestConfigView) {
   elements.manualDispatchBtn.disabled = !hasSecretValue("hi3uid", cfg) || !hasSecretValue("biliHitoken", cfg);
 }
 
+function hasCachedSessionState(cfg) {
+  return Boolean((cfg.account_login ?? cfg.accountLogin) || (cfg.last_login_succ && cfg.has_access_key));
+}
+
 function formatLocaleLabel(locale) {
   const key = `locale.name.${locale}`;
   const translated = t(key);
@@ -723,7 +727,7 @@ function formatSessionStatus(state, cfg) {
   const account = String(cfg.account ?? "").trim();
   const hasPassword = Boolean(cfg.has_password) || Boolean(String(elements.passwordInput?.value ?? "").trim());
   const hasCredentials = Boolean(account && hasPassword);
-  const hasCachedSession = Boolean((cfg.account_login ?? cfg.accountLogin) || (cfg.last_login_succ && cfg.has_access_key));
+  const hasCachedSession = hasCachedSessionState(cfg);
 
   if (state.captchaPending) {
     return { tone: "warn", text: t("status.verificationRequired") };
@@ -785,7 +789,7 @@ function renderState(state) {
   const session = formatSessionStatus(state, cfg);
   const dispatch = formatDispatchStatus(state, cfg);
   const versionText = String(cfg.bh_ver ?? cfg.bhVer ?? "").trim();
-  const hasCachedAccessKey = Boolean((cfg.account_login ?? cfg.accountLogin) || (cfg.last_login_succ && cfg.has_access_key));
+  const hasCachedAccessKey = hasCachedSessionState(cfg);
   const gameTone = state.gamePathValid ? "ok" : "warn";
   const gameText = state.gamePathValid
     ? t("status.gameConfigured", { version: versionText }).trim()

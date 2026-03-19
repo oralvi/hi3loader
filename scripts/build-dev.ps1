@@ -3,10 +3,14 @@ $ErrorActionPreference = "Stop"
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $baseVersion = "1.1.0"
 $buildTime = Get-Date
-$buildStamp = $buildTime.ToString("yyMMddHHmm")
-$displayTime = $buildTime.ToString("yyyy-MM-dd HH:mm:ss zzz")
-$titleStamp = "r$buildStamp"
-$outputName = "HI3 Loader $baseVersion"
+$buildDate = $buildTime.ToString("yyMMddHHmm")
+$bytes = New-Object byte[] 4
+$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+$rng.GetBytes($bytes)
+$rng.Dispose()
+$devStamp = "dev+" + ([System.BitConverter]::ToString($bytes).Replace("-", "").ToLowerInvariant()) + "+" + $buildDate
+$outputName = "HI3 Loader $baseVersion $devStamp"
+$ldFlags = "-X main.appVersion=$baseVersion -X main.buildStamp=$devStamp"
 
 Set-Location $root
 $env:GOCACHE = Join-Path $root ".gocache-release"
@@ -20,8 +24,6 @@ try {
 } catch {
   $hasPrivateImpl = $false
 }
-
-$ldFlags = "-s -w -X main.appVersion=$baseVersion -X main.buildStamp=$titleStamp"
 
 $wailsArgs = @(
   "run",
@@ -38,7 +40,7 @@ if ($hasPrivateImpl) {
   $wailsArgs += @("-tags", "private_impl")
 }
 
-Write-Host ("Building release version {0} with title stamp {1} ({2})" -f $baseVersion, $titleStamp, $displayTime)
+Write-Host ("Building development package version {0} with stamp {1}" -f $baseVersion, $devStamp)
 & go @wailsArgs
 
 $binDir = Join-Path $root "build\\bin"

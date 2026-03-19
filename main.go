@@ -1,9 +1,12 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"embed"
 	"log"
 	"os"
+	"time"
 
 	"hi3loader/internal/bridge"
 	"hi3loader/internal/service"
@@ -15,6 +18,39 @@ import (
 
 //go:embed all:frontend/dist
 var assets embed.FS
+
+var appVersion = "1.1.0"
+var buildStamp = ""
+var runtimeDevStamp = ""
+
+func effectiveBuildStamp() string {
+	if buildStamp != "" {
+		return buildStamp
+	}
+	if runtimeDevStamp == "" {
+		runtimeDevStamp = "dev+" + randomMask(4) + "+" + time.Now().Format("0601021504")
+	}
+	return runtimeDevStamp
+}
+
+func randomMask(size int) string {
+	if size <= 0 {
+		size = 4
+	}
+	buf := make([]byte, size)
+	if _, err := rand.Read(buf); err != nil {
+		return "dev"
+	}
+	return hex.EncodeToString(buf)
+}
+
+func appTitle() string {
+	title := "HI3 Loader " + appVersion
+	if stamp := effectiveBuildStamp(); stamp != "" {
+		title += " [" + stamp + "]"
+	}
+	return title
+}
 
 func main() {
 	handled, err := bridge.HandleAuxRuntime(os.Args[1:], os.Stdin, os.Stdout)
@@ -40,7 +76,7 @@ func main() {
 
 	app := NewApp(svc)
 	err = wails.Run(&options.App{
-		Title:            "HI3 Loader 1.1.0",
+		Title:            appTitle(),
 		Width:            1480,
 		Height:           980,
 		MinWidth:         1180,

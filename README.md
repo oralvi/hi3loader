@@ -34,18 +34,12 @@ cd ..
 wails dev
 ```
 
-If you keep local-only private files, include the `private_impl` tag:
-
-```powershell
-wails dev -tags private_impl
-```
-
 ### Development builds
 
-Quick local GUI build:
+Use the development build script if you want a local package to test.
 
 ```powershell
-wails build -tags private_impl
+.\scripts\build-dev.ps1
 ```
 
 Notes:
@@ -96,10 +90,9 @@ Release behavior:
 
 ## Repository Notes
 
-- `.gitignore` intentionally excludes portable runtime data, build output, generated bindings, and local-only private implementations.
+- `.gitignore` intentionally excludes portable runtime data, build output, generated bindings, etc..
 - The public repository is expected to compile in stub mode when private files are absent, but `frontend/dist` still needs to be generated locally before `go test ./...`, `go build`, or `wails build` can compile the `main` package.
 - Private local implementations are intentionally not tracked in the public repository.
-- The helper entrypoint `--aux-runtime` is an internal runtime path, not a supported public CLI.
 
 ## License
 

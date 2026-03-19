@@ -3,6 +3,7 @@ module hi3loader
 go 1.26
 
 require (
+	github.com/deepteams/webp v1.2.1
 	github.com/lxn/win v0.0.0-20210218163916-a377121e959e
 	github.com/makiuchi-d/gozxing v0.1.1
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c

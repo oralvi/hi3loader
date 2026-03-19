@@ -3,7 +3,9 @@ package main
 import (
 	"embed"
 	"log"
+	"os"
 
+	"hi3loader/internal/bridge"
 	"hi3loader/internal/service"
 
 	"github.com/wailsapp/wails/v2"
@@ -15,14 +17,30 @@ import (
 var assets embed.FS
 
 func main() {
-	svc, err := service.New("config.json")
+	handled, err := bridge.HandleAuxRuntime(os.Args[1:], os.Stdin, os.Stdout)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if handled {
+		return
+	}
+
+	exePath, err := os.Executable()
+	if err != nil {
+		log.Fatalf("resolve executable path: %v", err)
+	}
+
+	svc, err := service.NewWithOptions("config.json", service.Options{
+		BridgeExecutable: exePath,
+		RequireBridge:    true,
+	})
 	if err != nil {
 		log.Fatalf("init service: %v", err)
 	}
 
 	app := NewApp(svc)
 	err = wails.Run(&options.App{
-		Title:            "HI3 Loader 1.0.0",
+		Title:            "HI3 Loader 1.1.0",
 		Width:            1480,
 		Height:           980,
 		MinWidth:         1180,

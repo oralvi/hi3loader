@@ -530,8 +530,7 @@
                     captchaModule.isGeeTest || new BiliGeetestApis({
                         product: "bind"
                     }).ready.then(function (n) {
-                        console.log(n),
-                            n && 1 == n.captcha_type ? (captchaModule.captchaObj = n).onReady(function () {
+                        n && 1 == n.captcha_type ? (captchaModule.captchaObj = n).onReady(function () {
                                 n.verify(),
                                     e()
                             }).onSuccess(function () {
@@ -598,7 +597,6 @@
             return new Promise(function (t, e) {
                 var n = getParams();
                 if (n.code = 0,
-                    console.log(n),
                     0 == n.code && n.data) {
                     var o = n.data.captcha_type;
                     if (1 == o)
@@ -717,8 +715,7 @@
         }
             ,
             document.body.addEventListener("touchend", function (e) {
-                console.log(e.target.className),
-                    e.target.className && (-1 === e.target.className.indexOf("mask-close") && "geetest_close" !== e.target.className && -1 === e.target.className.indexOf("geetest_panel_ghost") || (console.log("closing"),
+                e.target.className && (-1 === e.target.className.indexOf("mask-close") && "geetest_close" !== e.target.className && -1 === e.target.className.indexOf("geetest_panel_ghost") || (
                         ifNewJsObject ? window.webkit.messageHandlers.BiliJsObject.postMessage({
                             method: "finishWithResult",
                             body: JSON.stringify({})

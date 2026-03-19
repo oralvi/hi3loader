@@ -2,16 +2,19 @@ package captcha
 
 import (
 	"context"
+	"crypto/rand"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
+	"net/url"
 	"strings"
 	"sync"
+	"time"
 )
 
 //go:embed assets/*.html
@@ -22,9 +25,10 @@ type Server struct {
 	server *http.Server
 	onRet  func(map[string]any)
 
-	mu      sync.RWMutex
-	ln      net.Listener
-	lastRet map[string]any
+	mu                  sync.RWMutex
+	ln                  net.Listener
+	expectedState       string
+	expectedStateExpiry time.Time
 }
 
 func NewServer(addr string, onRet func(map[string]any)) *Server {
@@ -33,7 +37,6 @@ func NewServer(addr string, onRet func(map[string]any)) *Server {
 	mux.HandleFunc("/", s.handleTemplate("index.html", fallbackIndex))
 	mux.HandleFunc("/geetest", s.handleTemplate("geetest.html", fallbackGeetest))
 	mux.HandleFunc("/ret", s.handleRet)
-	mux.HandleFunc("/last", s.handleLast)
 	s.server = &http.Server{
 		Addr:    addr,
 		Handler: mux,
@@ -89,18 +92,53 @@ func (s *Server) Prepare() error {
 	return nil
 }
 
-func (s *Server) Last() map[string]any {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Server) PrepareChallengeState(ttl time.Duration) (string, error) {
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
 
-	if s.lastRet == nil {
-		return nil
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
 	}
-	out := make(map[string]any, len(s.lastRet))
-	for k, v := range s.lastRet {
-		out[k] = v
+	state := base64.RawURLEncoding.EncodeToString(buf)
+
+	s.mu.Lock()
+	s.expectedState = state
+	s.expectedStateExpiry = time.Now().Add(ttl)
+	s.mu.Unlock()
+	return state, nil
+}
+
+func (s *Server) ClearChallengeState() {
+	s.mu.Lock()
+	s.expectedState = ""
+	s.expectedStateExpiry = time.Time{}
+	s.mu.Unlock()
+}
+
+func (s *Server) consumeChallengeState(state string) bool {
+	state = strings.TrimSpace(state)
+	if state == "" {
+		return false
 	}
-	return out
+
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.expectedState == "" || s.expectedStateExpiry.IsZero() || now.After(s.expectedStateExpiry) {
+		s.expectedState = ""
+		s.expectedStateExpiry = time.Time{}
+		return false
+	}
+	if state != s.expectedState {
+		return false
+	}
+
+	s.expectedState = ""
+	s.expectedStateExpiry = time.Time{}
+	return true
 }
 
 func (s *Server) handleRet(w http.ResponseWriter, r *http.Request) {
@@ -114,10 +152,11 @@ func (s *Server) handleRet(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
-
-	s.mu.Lock()
-	s.lastRet = payload
-	s.mu.Unlock()
+	if !s.consumeChallengeState(stringValue(payload["state"])) {
+		http.Error(w, "invalid state", http.StatusForbidden)
+		return
+	}
+	delete(payload, "state")
 
 	if s.onRet != nil {
 		go s.onRet(cloneMap(payload))
@@ -125,11 +164,6 @@ func (s *Server) handleRet(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte("1"))
-}
-
-func (s *Server) handleLast(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(s.Last())
 }
 
 func (s *Server) handleTemplate(name, fallback string) http.HandlerFunc {
@@ -146,12 +180,12 @@ func (s *Server) handleTemplate(name, fallback string) http.HandlerFunc {
 
 func decodePayload(r *http.Request) (map[string]any, error) {
 	payload := map[string]any{}
-	if r.Method == http.MethodGet {
-		for key, values := range r.URL.Query() {
-			if len(values) > 0 {
-				payload[key] = values[0]
-			}
+	for key, values := range r.URL.Query() {
+		if len(values) > 0 {
+			payload[key] = values[0]
 		}
+	}
+	if r.Method == http.MethodGet {
 		if len(payload) == 0 {
 			return nil, errors.New("missing query payload")
 		}
@@ -164,30 +198,23 @@ func decodePayload(r *http.Request) (map[string]any, error) {
 		return nil, err
 	}
 	if len(body) == 0 {
-		return nil, errors.New("empty request body")
+		if len(payload) == 0 {
+			return nil, errors.New("empty request body")
+		}
+		return payload, nil
 	}
-	if err := json.Unmarshal(body, &payload); err != nil {
+	bodyPayload := map[string]any{}
+	if err := json.Unmarshal(body, &bodyPayload); err != nil {
 		return nil, err
+	}
+	for key, value := range bodyPayload {
+		payload[key] = value
 	}
 	return payload, nil
 }
 
 func readTemplate(name string) ([]byte, error) {
-	if data, err := embeddedTemplates.ReadFile("assets/" + name); err == nil {
-		return data, nil
-	}
-	candidates := []string{
-		filepath.Join("..", "fresh_unpack", "target.exe_extracted", "templates", name),
-		filepath.Join("..", "..", "fresh_unpack", "target.exe_extracted", "templates", name),
-		filepath.Join("target.exe_extracted", "templates", name),
-	}
-	for _, candidate := range candidates {
-		data, err := os.ReadFile(candidate)
-		if err == nil {
-			return data, nil
-		}
-	}
-	return nil, os.ErrNotExist
+	return embeddedTemplates.ReadFile("assets/" + name)
 }
 
 func cloneMap(src map[string]any) map[string]any {
@@ -205,8 +232,26 @@ func (s *Server) injectRuntimeValues(body []byte) []byte {
 	}
 
 	updated := strings.ReplaceAll(string(body), "http://127.0.0.1:12983/ret", "http://"+addr+"/ret")
+	s.mu.RLock()
+	state := s.expectedState
+	validState := state != "" && !s.expectedStateExpiry.IsZero() && time.Now().Before(s.expectedStateExpiry)
+	s.mu.RUnlock()
+	if validState {
+		updated = strings.ReplaceAll(updated, "http://"+addr+"/ret", "http://"+addr+"/ret?state="+url.QueryEscape(state))
+	}
 	updated = strings.ReplaceAll(updated, "127.0.0.1:12983", addr)
 	return []byte(updated)
+}
+
+func stringValue(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	}
 }
 
 const fallbackIndex = `<!DOCTYPE html>
@@ -245,9 +290,9 @@ const fallbackGeetest = `<!DOCTYPE html>
 </head>
 <body>
   <main>
-    <h1>Captcha 模板缺失</h1>
-    <p>当前运行目录没有原始 <code>geetest.html</code> 模板。</p>
-    <code>../fresh_unpack/target.exe_extracted/templates/geetest.html</code>
+    <h1>Captcha template missing</h1>
+    <p>The original <code>geetest.html</code> template was not found in the expected runtime assets.</p>
+    <code>internal/captcha/assets/geetest.html</code>
   </main>
 </body>
 </html>`

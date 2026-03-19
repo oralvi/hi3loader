@@ -22,12 +22,15 @@ func New(dir, name string) (*Logger, error) {
 		name = "debug.log"
 	}
 
-	wd, err := os.Getwd()
-	if err != nil {
-		return nil, err
+	baseDir := dir
+	if !filepath.IsAbs(baseDir) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return nil, err
+		}
+		baseDir = filepath.Join(wd, dir)
 	}
 
-	baseDir := filepath.Join(wd, dir)
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		return nil, err
 	}

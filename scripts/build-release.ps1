@@ -1,22 +1,41 @@
 $ErrorActionPreference = "Stop"
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$workspace = (Resolve-Path (Join-Path $root "..")).Path
-$iconScript = Join-Path $workspace "tools\\sync-wails-icon.ps1"
-$sourceIcon = Join-Path $workspace "icon.png"
+$outputName = "HI3 Loader 1.1.0"
 
 Set-Location $root
 $env:GOCACHE = Join-Path $root ".gocache-release"
 
-& $iconScript -ProjectRoot $root -SourcePng $sourceIcon
+$hasPrivateImpl = $false
+try {
+  & go test -run '^$' -tags private_impl ./... *> $null
+  if ($LASTEXITCODE -eq 0) {
+    $hasPrivateImpl = $true
+  }
+} catch {
+  $hasPrivateImpl = $false
+}
 
-go run github.com/wailsapp/wails/v2/cmd/wails@v2.11.0 build `
-  -clean `
-  -o "HI3 loader 1.0.0"
+$wailsArgs = @(
+  "run",
+  "github.com/wailsapp/wails/v2/cmd/wails@v2.11.0",
+  "build",
+  "-ldflags",
+  "-s -w",
+  "-clean",
+  "-o",
+  $outputName
+)
+
+if ($hasPrivateImpl) {
+  $wailsArgs += @("-tags", "private_impl")
+}
+
+& go @wailsArgs
 
 $binDir = Join-Path $root "build\\bin"
-$plainOutput = Join-Path $binDir "HI3 loader 1.0.0"
-$exeOutput = Join-Path $binDir "HI3 loader 1.0.0.exe"
+$plainOutput = Join-Path $binDir $outputName
+$exeOutput = Join-Path $binDir ($outputName + ".exe")
 if ((Test-Path $plainOutput) -and -not (Test-Path $exeOutput)) {
-  Rename-Item $plainOutput "HI3 loader 1.0.0.exe"
+  Rename-Item $plainOutput ($outputName + ".exe")
 }

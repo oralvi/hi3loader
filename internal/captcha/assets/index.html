@@ -61,9 +61,7 @@
                 needCap: true,
             }
             localStorage.setItem('scanner_data', JSON.stringify(data));
-            console.log(window.location.href);
-            target_url = window.location.href.replace("/?", "/geetest?")
-            console.log(target_url);
+            var target_url = window.location.href.replace("/?", "/geetest?");
             document.getElementsByClassName("geetest_frame")[0].src = target_url;
 
             setInterval('checkClose()', 500);

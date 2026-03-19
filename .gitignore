@@ -1,95 +1,42 @@
-# Build artifacts
+# Build output
 /build/
-/build/bin/
-/build/frontend/
-/frontend/dist/
-/frontend/wailsjs/
-/frontend/node_modules/
-/node_modules/
 /dist/
-
-# Local configuration (do not commit secrets)
-/config.json
-
-# Executables and platforms
-*.exe
-*.dll
-*.so
-*.dylib
-
-# Go build outputs (do not commit build cache or binary artifacts)
 /bin/
 /pkg/
-*.test
+/frontend/dist/
+/frontend/node_modules/
+/frontend/wailsjs/
+/node_modules/
 
-# Go caches (usually outside repo, but ignore if present)
+# Local runtime data
+/config.json
+/logs/
+*.log
+*.tmp
+*.cache
+*.jsonl
+/tmp/
+tmp/
+tmp_*/
+
+# Local workspace extras
+/scripts/manual_fetch_bili.go
+/internal/**/aux_tables.go
+
+# Go caches
 GOCACHE/
 GOMODCACHE/
 .gocache/
 .gocache-release/
 
-# Module files (lock files may be tracked, but large generated copies should not)
-go.sum
+# Native binaries
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
 
-# Logs and temp files
-/logs/
-*.log
-*.tmp
-*.cache
-tmp/
-tmp_*
-*.jsonl
-
-# Node / frontend
-/frontend/dist/
-/frontend/node_modules/
-
-# Internal generated or extracted token helpers and scripts
-/scripts/manual_fetch_bili.go
-/internal/bilihitoken/
-
-# Editor and OS files
+# Editor / OS files
 .vscode/
 .DS_Store
 Thumbs.db
-
-# Other artifacts
-*.exe
-
-# Keep workspace-local Wails bindings ignored by default
-frontend/wailsjs/
-# Build artifacts
-/build/bin/
-/build/frontend/
-/frontend/dist/
-/frontend/node_modules/
-/node_modules/
-/dist/
-
-# Executables
-*.exe
-
-# Internal generated or extracted token helpers and scripts
-/scripts/manual_fetch_bili.go
-**/official_dispatch.go
-/internal/bilihitoken/
-
-# Logs and temp files
-/logs/
-*.log
-*.tmp
-*.cache
-/tmp/
-
-# Editor and OS files
-.vscode/
-.DS_Store
-Thumbs.db
-
-# Go build cache and modules
-/bin/
-/pkg/
-*.exe
-
-# Wails generated bindings (optional - keep if you prefer tracking)
-# frontend/wailsjs/

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -8,18 +9,23 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"hi3loader/internal/bilihitoken"
+	"hi3loader/internal/bridge"
 	"hi3loader/internal/bsgamesdk"
 	"hi3loader/internal/captcha"
 	"hi3loader/internal/config"
@@ -30,24 +36,33 @@ import (
 	"hi3loader/internal/qr"
 	"hi3loader/internal/winwindow"
 
+	purewebp "github.com/deepteams/webp"
 	"github.com/pkg/browser"
 	"golang.design/x/clipboard"
+	_ "golang.org/x/image/bmp"
+	_ "golang.org/x/image/tiff"
 )
 
 const (
 	defaultConfigPath         = "config.json"
 	maxLogEntries             = 300
 	ticketTTL                 = 30 * time.Second
+	pendingCredentialTTL      = 10 * time.Minute
 	defaultSleepTime          = 3
 	blockedSleepTime          = 8
-	maxDispatchCaches         = 12
+	windowMissBackoffSeconds  = 6
+	windowMissMaxSeconds      = 10
+	windowStaticSkipThreshold = 2
+	windowStaticDecodePeriod  = 3
 	managedBackgroundBaseName = "custom_background"
+	managedBackgroundExt      = ".webp"
 )
 
 var (
-	targetWindowPattern = regexp.MustCompile(`\x{5D29}\x{574F}3`)
-	targetProcessNames  = []string{"bh3.exe"}
-	sensitiveLogRules   = []struct {
+	targetWindowPattern  = regexp.MustCompile(`\x{5D29}\x{574F}3`)
+	targetProcessNames   = []string{"bh3.exe"}
+	versionStringPattern = regexp.MustCompile(`\d+(?:\.\d+)+`)
+	sensitiveLogRules    = []struct {
 		pattern     *regexp.Regexp
 		replacement string
 	}{
@@ -67,34 +82,47 @@ type LogEntry struct {
 }
 
 type State struct {
-	Config         config.Config `json:"config"`
-	Running        bool          `json:"running"`
-	ServerAddress  string        `json:"serverAddress"`
-	ServerReady    bool          `json:"serverReady"`
-	DispatchSource string        `json:"dispatchSource"`
-	GamePathValid  bool          `json:"gamePathValid"`
-	GamePathPrompt string        `json:"gamePathPrompt"`
-	LogPath        string        `json:"logPath"`
-	CaptchaURL     string        `json:"captchaURL"`
-	CaptchaPending bool          `json:"captchaPending"`
-	LastAction     string        `json:"lastAction"`
-	LastError      string        `json:"lastError"`
-	LastTicket     string        `json:"lastTicket"`
-	LastQRCodeURL  string        `json:"lastQRCodeURL"`
-	QuitRequested  bool          `json:"quitRequested"`
-	Logs           []LogEntry    `json:"logs"`
+	Config           ConfigView `json:"config"`
+	Running          bool       `json:"running"`
+	ServerAddress    string     `json:"serverAddress"`
+	ServerReady      bool       `json:"serverReady"`
+	DispatchSource   string     `json:"dispatchSource"`
+	GamePathValid    bool       `json:"gamePathValid"`
+	GamePathPrompt   string     `json:"gamePathPrompt"`
+	GamePathMessage  MessageRef `json:"gamePathMessage"`
+	LogPath          string     `json:"logPath"`
+	CaptchaURL       string     `json:"captchaURL"`
+	CaptchaPending   bool       `json:"captchaPending"`
+	LastAction       string     `json:"lastAction"`
+	LastError        string     `json:"lastError"`
+	LastErrorMessage MessageRef `json:"lastErrorMessage"`
+	LastTicket       string     `json:"lastTicket"`
+	LastQRCodeURL    string     `json:"lastQRCodeURL"`
+	QuitRequested    bool       `json:"quitRequested"`
 }
 
 type LoginResult struct {
-	OK               bool           `json:"ok"`
-	NeedsCaptcha     bool           `json:"needsCaptcha"`
-	CaptchaURL       string         `json:"captchaURL,omitempty"`
-	Message          string         `json:"message,omitempty"`
-	UName            string         `json:"uname,omitempty"`
-	BiliResponse     map[string]any `json:"biliResponse,omitempty"`
-	UserInfo         map[string]any `json:"userInfo,omitempty"`
-	VerifyResponse   map[string]any `json:"verifyResponse,omitempty"`
-	DispatchResponse map[string]any `json:"dispatchResponse,omitempty"`
+	OK             bool              `json:"ok"`
+	NeedsCaptcha   bool              `json:"needsCaptcha"`
+	CaptchaURL     string            `json:"captchaURL,omitempty"`
+	Message        string            `json:"message,omitempty"`
+	MessageCode    string            `json:"messageCode,omitempty"`
+	MessageParams  map[string]string `json:"messageParams,omitempty"`
+	UName          string            `json:"uname,omitempty"`
+	SessionReady   bool              `json:"sessionReady,omitempty"`
+	DispatchReady  bool              `json:"dispatchReady,omitempty"`
+	DispatchSource string            `json:"dispatchSource,omitempty"`
+	Retcode        int64             `json:"retcode,omitempty"`
+}
+
+type ScanResult struct {
+	OK            bool              `json:"ok"`
+	Confirmed     bool              `json:"confirmed"`
+	Message       string            `json:"message,omitempty"`
+	MessageCode   string            `json:"messageCode,omitempty"`
+	MessageParams map[string]string `json:"messageParams,omitempty"`
+	Retcode       int64             `json:"retcode,omitempty"`
+	QuitRequested bool              `json:"quitRequested,omitempty"`
 }
 
 type Hooks struct {
@@ -107,37 +135,64 @@ type Service struct {
 
 	bili   *bsgamesdk.Client
 	mihoyo *mihoyosdk.Client
+	bridge *bridge.Client
 
-	mu                sync.RWMutex
-	cfg               *config.Config
-	server            *captcha.Server
-	serverReady       bool
-	serverStarted     bool
-	running           bool
-	loopCancel        context.CancelFunc
-	captchaURL        string
-	captchaPending    bool
-	dispatchSource    string
-	lastAction        string
-	lastError         string
-	lastTicket        string
-	lastQRCodeURL     string
-	quitRequested     bool
-	logs              []LogEntry
-	bhInfo            map[string]any
-	backgroundDataURL string
-	recentTickets     map[string]time.Time
-	clipboardHash     string
-	clipboardReady    bool
-	clipboardErr      error
-	hooks             Hooks
-	fileLog           *debuglog.Logger
-	loginMu           sync.Mutex
+	mu                 sync.RWMutex
+	cfg                *config.Config
+	server             *captcha.Server
+	serverReady        bool
+	serverStarted      bool
+	running            bool
+	loopCancel         context.CancelFunc
+	captchaURL         string
+	captchaPending     bool
+	dispatchSource     string
+	lastAction         string
+	lastError          string
+	lastErrorMessage   MessageRef
+	lastTicket         string
+	lastQRCodeURL      string
+	quitRequested      bool
+	logs               []LogEntry
+	sessionInfo        *mihoyosdk.SessionInfo
+	backgroundDataURL  string
+	recentTickets      map[string]time.Time
+	clipboardHash      string
+	clipboardReady     bool
+	clipboardErr       error
+	windowMissStreak   int
+	windowStaticStreak int
+	windowFingerprint  string
+	hooks              Hooks
+	fileLog            *debuglog.Logger
+	loginMu            sync.Mutex
+	pendingAccount     string
+	pendingPassword    []byte
+	pendingPasswordTTL time.Time
+	pendingPasswordGen uint64
+	pendingPasswordTmr *time.Timer
+}
+
+type Options struct {
+	BridgeExecutable string
+	RequireBridge    bool
 }
 
 func New(cfgPath string) (*Service, error) {
+	return NewWithOptions(cfgPath, Options{})
+}
+
+func NewWithOptions(cfgPath string, opts Options) (*Service, error) {
 	if cfgPath == "" {
 		cfgPath = defaultConfigPath
+	}
+
+	if !filepath.IsAbs(cfgPath) {
+		absPath, err := filepath.Abs(cfgPath)
+		if err != nil {
+			return nil, fmt.Errorf("resolve config path: %w", err)
+		}
+		cfgPath = absPath
 	}
 
 	cfg, err := config.LoadOrCreate(cfgPath)
@@ -145,13 +200,23 @@ func New(cfgPath string) (*Service, error) {
 		return nil, err
 	}
 
-	fileLog, _ := debuglog.New("logs", "hi3loader-debug.log")
+	logDir := filepath.Join(filepath.Dir(cfgPath), "logs")
+	fileLog, _ := debuglog.New(logDir, "hi3loader-debug.log")
+
+	bridgeClient, err := bridge.NewClient(opts.BridgeExecutable)
+	if err != nil {
+		return nil, fmt.Errorf("init helper bridge: %w", err)
+	}
+	if opts.RequireBridge && bridgeClient == nil {
+		return nil, fmt.Errorf("helper bridge is required in this mode")
+	}
 
 	s := &Service{
 		cfgPath:       cfgPath,
 		cfg:           cfg,
 		bili:          bsgamesdk.NewClient(),
 		mihoyo:        mihoyosdk.NewClient(),
+		bridge:        bridgeClient,
 		fileLog:       fileLog,
 		recentTickets: map[string]time.Time{},
 	}
@@ -173,7 +238,7 @@ func (s *Service) Bootstrap(ctx context.Context) (State, error) {
 		return State{}, err
 	}
 
-	_, _, _ = s.syncGameVersion()
+	_, _, _, _ = s.syncGameVersion()
 	s.logAvailableDispatchSource()
 
 	return s.State(), nil
@@ -259,32 +324,40 @@ func (s *Service) State() State {
 	captchaPending := s.captchaPending
 	lastAction := s.lastAction
 	lastError := s.lastError
+	lastErrorMessage := cloneMessageRef(s.lastErrorMessage)
 	lastTicket := s.lastTicket
 	lastQRCodeURL := s.lastQRCodeURL
 	quitRequested := s.quitRequested
-	logs := append([]LogEntry(nil), s.logs...)
 	s.mu.RUnlock()
 
-	gamePathValid, gamePathPrompt := evaluateGamePath(cfg.GamePath)
+	gamePathValid, gamePathMessage := evaluateGamePath(cfg.GamePath)
+	gamePathPrompt := fallbackMessageText(gamePathMessage)
 
 	return State{
-		Config:         *cfg,
-		Running:        running,
-		ServerAddress:  s.server.Addr(),
-		ServerReady:    serverReady,
-		DispatchSource: dispatchSource,
-		GamePathValid:  gamePathValid,
-		GamePathPrompt: gamePathPrompt,
-		LogPath:        logPath,
-		CaptchaURL:     captchaURL,
-		CaptchaPending: captchaPending,
-		LastAction:     lastAction,
-		LastError:      lastError,
-		LastTicket:     lastTicket,
-		LastQRCodeURL:  lastQRCodeURL,
-		QuitRequested:  quitRequested,
-		Logs:           logs,
+		Config:           buildConfigView(cfg),
+		Running:          running,
+		ServerAddress:    s.server.Addr(),
+		ServerReady:      serverReady,
+		DispatchSource:   dispatchSource,
+		GamePathValid:    gamePathValid,
+		GamePathPrompt:   gamePathPrompt,
+		GamePathMessage:  gamePathMessage,
+		LogPath:          logPath,
+		CaptchaURL:       captchaURL,
+		CaptchaPending:   captchaPending,
+		LastAction:       lastAction,
+		LastError:        lastError,
+		LastErrorMessage: lastErrorMessage,
+		LastTicket:       lastTicket,
+		LastQRCodeURL:    lastQRCodeURL,
+		QuitRequested:    quitRequested,
 	}
+}
+
+func (s *Service) LogSnapshot() []LogEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]LogEntry(nil), s.logs...)
 }
 
 func (s *Service) Config() *config.Config {
@@ -316,7 +389,7 @@ func (s *Service) UpdateConfig(gamePath string, clipCheck, autoClose, autoClip, 
 		return State{}, err
 	}
 
-	if _, _, err := s.syncGameVersion(); err != nil {
+	if _, _, _, err := s.syncGameVersion(); err != nil {
 		return State{}, err
 	}
 	_, _ = s.syncVersionAndDispatch(context.Background(), false)
@@ -326,113 +399,29 @@ func (s *Service) UpdateConfig(gamePath string, clipCheck, autoClose, autoClip, 
 
 // SaveSetting updates a single config field and persists the config.
 func (s *Service) SaveSetting(key string, value any) (State, error) {
-	// Temporary incoming-audit: write the raw incoming key/value so we can
-	// trace whether frontend actually sent the HI3UID. This is short-lived
-	// debugging instrumentation and can be removed after investigation.
-	if s.fileLog != nil {
-		s.fileLog.Writef("incoming SaveSetting: %s -> %v", key, value)
-	}
-	// Also append a compact text line to logs/save_incoming.log to ensure
-	// we capture the event regardless of logger working directory.
-	func() {
-		f, err := os.OpenFile("logs/save_incoming.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return
-		}
-		defer f.Close()
-		_, _ = f.WriteString(time.Now().Format(time.RFC3339Nano) + " " + key + " -> " + fmt.Sprint(value) + "\n")
-	}()
-	// capture old value for audit
-	var oldVal string
+	key = strings.TrimSpace(key)
+
 	s.mu.Lock()
-	if s.cfg != nil {
-		// read current value into oldVal (best-effort)
-		switch key {
-		case "account":
-			oldVal = s.cfg.Account
-		case "password":
-			oldVal = "<redacted>"
-		case "HI3UID":
-			oldVal = s.cfg.HI3UID
-		case "BILIHITOKEN":
-			oldVal = s.cfg.BILIHITOKEN
-		case "panel_blur":
-			oldVal = fmt.Sprintf("%v", s.cfg.PanelBlur)
-		case "clip_check":
-			oldVal = fmt.Sprintf("%v", s.cfg.ClipCheck)
-		case "auto_clip":
-			oldVal = fmt.Sprintf("%v", s.cfg.AutoClip)
-		case "auto_close":
-			oldVal = fmt.Sprintf("%v", s.cfg.AutoClose)
-		case "background_opacity":
-			oldVal = fmt.Sprintf("%v", s.cfg.BackgroundOpacity)
-		case "game_path":
-			oldVal = s.cfg.GamePath
-		default:
-			oldVal = "<unknown>"
-		}
-	}
-	// modify in-memory config under lock
-	switch key {
-	case "account":
-		s.cfg.Account = strings.TrimSpace(fmt.Sprintf("%v", value))
-	case "password":
-		s.cfg.Password = fmt.Sprintf("%v", value)
-	case "HI3UID":
-		s.cfg.HI3UID = strings.TrimSpace(fmt.Sprintf("%v", value))
-	case "BILIHITOKEN":
-		s.cfg.BILIHITOKEN = strings.TrimSpace(fmt.Sprintf("%v", value))
-	case "panel_blur":
-		if b, ok := value.(bool); ok {
-			s.cfg.PanelBlur = b
-		}
-	case "clip_check":
-		if b, ok := value.(bool); ok {
-			s.cfg.ClipCheck = b
-		}
-	case "auto_clip":
-		if b, ok := value.(bool); ok {
-			s.cfg.AutoClip = b
-		}
-	case "auto_close":
-		if b, ok := value.(bool); ok {
-			s.cfg.AutoClose = b
-		}
-	case "background_opacity":
-		// expect number (float64)
-		if f, ok := value.(float64); ok {
-			s.cfg.BackgroundOpacity = f
-		}
-	case "game_path":
-		s.cfg.GamePath = strings.TrimSpace(fmt.Sprintf("%v", value))
-	default:
+	if s.cfg == nil {
 		s.mu.Unlock()
-		return s.State(), fmt.Errorf("unknown setting: %s", key)
+		return s.State(), fmt.Errorf("config is not loaded")
 	}
-	// persist while still holding the lock to avoid races
-	err := config.Save(s.cfgPath, s.cfg)
+	oldVal := settingAuditValue(s.cfg, key)
+	nextCfg := s.cfg.Clone()
+	if err := applySettingValue(nextCfg, key, value); err != nil {
+		s.mu.Unlock()
+		return s.State(), err
+	}
+	newVal := settingAuditValue(nextCfg, key)
+	err := config.Save(s.cfgPath, nextCfg)
+	if err == nil {
+		s.cfg = nextCfg
+	}
 	s.mu.Unlock()
-	// Audit log: record setting change (avoid logging sensitive password)
+
 	if s.fileLog != nil {
-		newVal := ""
-		switch key {
-		case "password":
-			newVal = "<redacted>"
-		case "HI3UID", "BILIHITOKEN", "account", "game_path":
-			newVal = fmt.Sprintf("%v", value)
-		case "panel_blur", "clip_check", "auto_clip", "auto_close":
-			newVal = fmt.Sprintf("%v", value)
-		case "background_opacity":
-			newVal = fmt.Sprintf("%v", value)
-		default:
-			newVal = fmt.Sprintf("%v", value)
-		}
-		// redact long tokens for safety in logs (keep start/end)
-		if key == "BILIHITOKEN" && len(newVal) > 8 {
-			newVal = newVal[:4] + "..." + newVal[len(newVal)-4:]
-		}
-		if oldVal == "<redacted>" {
-			s.fileLog.Writef("save setting: %s -> %s", key, newVal)
+		if err != nil {
+			s.fileLog.Writef("save setting failed: %s '%s' -> '%s': %v", key, oldVal, newVal, err)
 		} else {
 			s.fileLog.Writef("save setting: %s '%s' -> '%s'", key, oldVal, newVal)
 		}
@@ -441,9 +430,95 @@ func (s *Service) SaveSetting(key string, value any) (State, error) {
 		return s.State(), err
 	}
 
-	// If HI3UID/BILIHITOKEN changed, do not auto-refresh dispatch here; leave it to manual action
 	s.emitState()
 	return s.State(), nil
+}
+
+func (s *Service) RecordClientMessage(message string) {
+	message = strings.TrimSpace(s.sanitizeMessage(message))
+	if message == "" || s.fileLog == nil {
+		return
+	}
+	s.fileLog.Writef("%s", message)
+}
+
+func applySettingValue(cfg *config.Config, key string, value any) error {
+	switch key {
+	case "account":
+		cfg.Account = strings.TrimSpace(fmt.Sprintf("%v", value))
+	case "password":
+		cfg.Password = fmt.Sprintf("%v", value)
+	case "HI3UID":
+		cfg.HI3UID = strings.TrimSpace(fmt.Sprintf("%v", value))
+	case "BILIHITOKEN":
+		cfg.BILIHITOKEN = strings.TrimSpace(fmt.Sprintf("%v", value))
+	case "panel_blur":
+		b, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("setting %s expects bool", key)
+		}
+		cfg.PanelBlur = b
+	case "clip_check":
+		b, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("setting %s expects bool", key)
+		}
+		cfg.ClipCheck = b
+	case "auto_clip":
+		b, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("setting %s expects bool", key)
+		}
+		cfg.AutoClip = b
+	case "auto_close":
+		b, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("setting %s expects bool", key)
+		}
+		cfg.AutoClose = b
+	case "background_opacity":
+		f, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("setting %s expects number", key)
+		}
+		cfg.BackgroundOpacity = clampBackgroundOpacity(f)
+	case "game_path":
+		cfg.GamePath = strings.TrimSpace(fmt.Sprintf("%v", value))
+	default:
+		return fmt.Errorf("unknown setting: %s", key)
+	}
+	return nil
+}
+
+func settingAuditValue(cfg *config.Config, key string) string {
+	if cfg == nil {
+		return "<nil>"
+	}
+
+	switch key {
+	case "account":
+		return cfg.Account
+	case "password":
+		return "<redacted>"
+	case "HI3UID":
+		return maskSecret(cfg.HI3UID)
+	case "BILIHITOKEN":
+		return maskSecret(cfg.BILIHITOKEN)
+	case "panel_blur":
+		return fmt.Sprintf("%v", cfg.PanelBlur)
+	case "clip_check":
+		return fmt.Sprintf("%v", cfg.ClipCheck)
+	case "auto_clip":
+		return fmt.Sprintf("%v", cfg.AutoClip)
+	case "auto_close":
+		return fmt.Sprintf("%v", cfg.AutoClose)
+	case "background_opacity":
+		return fmt.Sprintf("%v", cfg.BackgroundOpacity)
+	case "game_path":
+		return cfg.GamePath
+	default:
+		return "<unknown>"
+	}
 }
 
 func (s *Service) UpdateBackground(backgroundPath string, opacity float64) (State, error) {
@@ -542,6 +617,7 @@ func (s *Service) LaunchGame() error {
 	s.mu.Lock()
 	s.lastAction = "launch_game"
 	s.lastError = ""
+	s.lastErrorMessage = MessageRef{}
 	s.mu.Unlock()
 	s.logf("game client started")
 	s.emitState()
@@ -557,35 +633,91 @@ func (s *Service) OpenCaptchaURL() error {
 	target := s.captchaURL
 	s.mu.RUnlock()
 	if target == "" {
-		return fmt.Errorf("captcha url is empty")
+		return localizedErrorf("backend.error.captcha_url_empty", nil, "captcha url is empty")
 	}
 	return browser.OpenURL(target)
 }
 
 func (s *Service) EnsureSession(ctx context.Context) error {
 	s.mu.RLock()
-	ready := s.bhInfo != nil && s.cfg.AccountLogin
+	ready := s.sessionInfo != nil && s.cfg.AccountLogin
 	cfg := s.cfg.Clone()
 	s.mu.RUnlock()
 	if ready {
 		return nil
 	}
-	if cfg.UID == 0 || cfg.AccessKey == "" {
-		return fmt.Errorf("missing cached uid/access_key")
+	if cfg.AccessKey == "" {
+		return fmt.Errorf("missing cached access_key")
 	}
 
-	verifyResp, err := s.mihoyo.Verify(ctx, fmt.Sprintf("%d", cfg.UID), cfg.AccessKey)
+	if s.bridge != nil {
+		verifyResp, err := s.bridge.VerifySession(ctx, bridge.VerifyRequest{
+			UID:       cfg.UID,
+			AccessKey: cfg.AccessKey,
+		})
+		if err != nil {
+			s.clearCachedSession("cached session verify failed; login required again")
+			return err
+		}
+		if verifyResp.Retcode != 0 {
+			s.clearCachedSession("cached session expired; login required again")
+			return localizedErrorf(
+				"backend.error.verify_retcode",
+				map[string]string{
+					"source":  "Cached session",
+					"retcode": strconv.FormatInt(verifyResp.Retcode, 10),
+				},
+				"verify retcode=%d",
+				verifyResp.Retcode,
+			)
+		}
+
+		s.mu.Lock()
+		s.sessionInfo = cloneSessionInfo(&verifyResp.Session)
+		s.cfg.AccountLogin = true
+		err = config.Save(s.cfgPath, s.cfg)
+		s.mu.Unlock()
+		if err != nil {
+			return err
+		}
+
+		if _, err := s.syncVersionAndDispatch(ctx, false); err != nil {
+			s.logf("dispatch refresh skipped after session restore: %v", err)
+		}
+		s.emitState()
+		return nil
+	}
+
+	verifyUID := ""
+	if cfg.UID != 0 {
+		verifyUID = fmt.Sprintf("%d", cfg.UID)
+	}
+	verifyResp, err := s.mihoyo.Verify(ctx, verifyUID, cfg.AccessKey)
 	if err != nil {
 		s.clearCachedSession("cached session verify failed; login required again")
 		return err
 	}
 	if config.Int64Value(verifyResp["retcode"]) != 0 {
 		s.clearCachedSession("cached session expired; login required again")
-		return fmt.Errorf("verify retcode=%d", config.Int64Value(verifyResp["retcode"]))
+		return localizedErrorf(
+			"backend.error.verify_retcode",
+			map[string]string{
+				"source":  "Cached session",
+				"retcode": strconv.FormatInt(config.Int64Value(verifyResp["retcode"]), 10),
+			},
+			"verify retcode=%d",
+			config.Int64Value(verifyResp["retcode"]),
+		)
+	}
+
+	session, err := mihoyosdk.ExtractSessionInfo(verifyResp)
+	if err != nil {
+		s.setError(err)
+		return err
 	}
 
 	s.mu.Lock()
-	s.bhInfo = cloneMap(verifyResp)
+	s.sessionInfo = cloneSessionInfo(session)
 	s.cfg.AccountLogin = true
 	err = config.Save(s.cfgPath, s.cfg)
 	s.mu.Unlock()
@@ -602,7 +734,7 @@ func (s *Service) EnsureSession(ctx context.Context) error {
 
 func (s *Service) clearCachedSession(reason string) {
 	s.mu.Lock()
-	s.bhInfo = nil
+	s.sessionInfo = nil
 	s.cfg.LastLoginSucc = false
 	s.cfg.AccountLogin = false
 	s.cfg.UID = 0
@@ -620,29 +752,54 @@ func (s *Service) clearCachedSession(reason string) {
 	s.emitState()
 }
 
-func (s *Service) ScanTicket(ctx context.Context, ticket string) (map[string]any, error) {
+func (s *Service) ScanTicket(ctx context.Context, ticket string) (ScanResult, error) {
 	if ticket == "" {
-		return nil, fmt.Errorf("ticket is required")
+		return ScanResult{}, localizedErrorf("backend.error.ticket_required", nil, "ticket is required")
 	}
 	if err := s.EnsureSession(ctx); err != nil {
-		return nil, err
+		return ScanResult{}, err
 	}
 
 	s.mu.RLock()
-	bhInfo := cloneMap(s.bhInfo)
+	sessionInfo := cloneSessionInfo(s.sessionInfo)
 	cfg := s.cfg.Clone()
 	s.mu.RUnlock()
 
-	result, err := s.mihoyo.ScanCheck(ctx, bhInfo, ticket, cfg)
+	if sessionInfo == nil {
+		return ScanResult{}, localizedErrorf("backend.error.session_not_ready", nil, "session is not ready")
+	}
+
+	var (
+		result map[string]any
+		err    error
+	)
+	if s.bridge != nil {
+		scanResp, scanErr := s.bridge.ScanCheck(ctx, bridge.ScanRequest{
+			Config:  bridgeConfigSnapshot(cfg),
+			Session: *sessionInfo,
+			Ticket:  ticket,
+		})
+		if scanErr != nil {
+			s.setError(scanErr)
+			return ScanResult{}, scanErr
+		}
+		result = map[string]any{
+			"retcode": scanResp.Retcode,
+			"message": scanResp.Message,
+		}
+	} else {
+		result, err = s.mihoyo.ScanCheck(ctx, *sessionInfo, ticket, cfg)
+	}
 	if err != nil {
 		s.setError(err)
-		return nil, err
+		return ScanResult{}, err
 	}
 
 	s.mu.Lock()
 	s.lastTicket = ticket
 	s.lastAction = "scan"
 	s.lastError = ""
+	s.lastErrorMessage = MessageRef{}
 	s.mu.Unlock()
 
 	if config.Int64Value(result["retcode"]) == 0 {
@@ -650,30 +807,32 @@ func (s *Service) ScanTicket(ctx context.Context, ticket string) (map[string]any
 		s.mu.RLock()
 		autoClose := s.cfg.AutoClose
 		s.mu.RUnlock()
+		outcome := summarizeScanResult(result)
 		if autoClose {
 			s.mu.Lock()
 			s.quitRequested = true
 			s.lastAction = "quit_requested"
 			s.mu.Unlock()
 			s.emitState()
+			outcome.QuitRequested = true
 		} else {
 			s.pauseMonitorAfterSuccess()
 		}
-		return result, nil
+		return outcome, nil
 	}
 
-	s.logf("scan did not complete: %v", result)
+	s.logf("scan did not complete retcode=%d message=%s", config.Int64Value(result["retcode"]), sanitizeResultMessage(result))
 	if message := strings.TrimSpace(config.StringValue(result["message"])); looksLikeAccessBlock(strings.ToLower(message)) {
-		s.setError(fmt.Errorf("scan blocked: %s", message))
+		s.setError(localizedErrorf("backend.error.scan_blocked", map[string]string{"reason": message}, "scan blocked: %s", message))
 	}
 	s.emitState()
-	return result, nil
+	return summarizeScanResult(result), nil
 }
 
-func (s *Service) ScanURL(ctx context.Context, rawURL string) (map[string]any, error) {
+func (s *Service) ScanURL(ctx context.Context, rawURL string) (ScanResult, error) {
 	ticket, err := qr.ExtractTicket(rawURL)
 	if err != nil {
-		return nil, err
+		return ScanResult{}, err
 	}
 	return s.ScanTicket(ctx, ticket)
 }
@@ -720,10 +879,22 @@ func (s *Service) monitorLoop(ctx context.Context) {
 func (s *Service) monitorSleepTime() int {
 	s.mu.RLock()
 	lastError := strings.ToLower(strings.TrimSpace(s.lastError))
+	autoClip := s.cfg.AutoClip
+	windowMissStreak := s.windowMissStreak
 	s.mu.RUnlock()
 
 	if looksLikeAccessBlock(lastError) {
 		return blockedSleepTime
+	}
+	if autoClip {
+		switch {
+		case windowMissStreak >= 8:
+			return windowMissMaxSeconds
+		case windowMissStreak >= 4:
+			return 8
+		case windowMissStreak >= 2:
+			return windowMissBackoffSeconds
+		}
 	}
 	return defaultSleepTime
 }
@@ -739,15 +910,76 @@ func looksLikeAccessBlock(message string) bool {
 		"frequency",
 		"risk",
 		"captcha",
-		"拦截",
-		"频繁",
-		"限制",
+		"blocked",
+		"limited",
+		"\u62e6\u622a",
+		"\u9891\u7e41",
+		"\u9650\u5236",
 	} {
 		if strings.Contains(message, keyword) {
 			return true
 		}
 	}
 	return false
+}
+
+func (s *Service) noteWindowMissing() {
+	s.mu.Lock()
+	s.windowMissStreak++
+	s.windowStaticStreak = 0
+	s.windowFingerprint = ""
+	s.mu.Unlock()
+}
+
+func (s *Service) shouldSkipWindowDecode(fingerprint string, silent bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.windowMissStreak = 0
+	if fingerprint == "" {
+		s.windowStaticStreak = 0
+		s.windowFingerprint = ""
+		return false
+	}
+
+	if s.windowFingerprint != fingerprint {
+		s.windowFingerprint = fingerprint
+		s.windowStaticStreak = 0
+		return false
+	}
+
+	s.windowStaticStreak++
+	if !silent {
+		return false
+	}
+	if s.windowStaticStreak < windowStaticSkipThreshold {
+		return false
+	}
+	return s.windowStaticStreak%windowStaticDecodePeriod != 0
+}
+
+func windowImageFingerprint(img image.Image) string {
+	if img == nil {
+		return ""
+	}
+	bounds := img.Bounds()
+	if bounds.Empty() || bounds.Dx() <= 0 || bounds.Dy() <= 0 {
+		return ""
+	}
+
+	const grid = 8
+	hasher := fnv.New64a()
+	_, _ = hasher.Write([]byte(fmt.Sprintf("%dx%d", bounds.Dx(), bounds.Dy())))
+	for y := 0; y < grid; y++ {
+		sampleY := bounds.Min.Y + ((2*y+1)*bounds.Dy())/(2*grid)
+		for x := 0; x < grid; x++ {
+			sampleX := bounds.Min.X + ((2*x+1)*bounds.Dx())/(2*grid)
+			r, g, b, a := img.At(sampleX, sampleY).RGBA()
+			luma := uint8((((r >> 8) * 299) + ((g >> 8) * 587) + ((b >> 8) * 114)) / 1000)
+			_, _ = hasher.Write([]byte{luma, uint8(a >> 8)})
+		}
+	}
+	return strconv.FormatUint(hasher.Sum64(), 16)
 }
 
 func (s *Service) startServer() error {
@@ -827,7 +1059,7 @@ func (s *Service) initClipboard() {
 func (s *Service) monitorReady() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.cfg.AccountLogin && s.bhInfo != nil
+	return s.cfg.AccountLogin && s.sessionInfo != nil
 }
 
 func (s *Service) prepareScanSession(ctx context.Context, silent bool) error {
@@ -843,7 +1075,7 @@ func (s *Service) prepareScanSession(ctx context.Context, silent bool) error {
 			s.mu.Unlock()
 			return nil
 		}
-		return fmt.Errorf("game session is not ready; login first")
+		return localizedErrorf("backend.error.session_not_ready", nil, "game session is not ready; login first")
 	}
 
 	_, _ = s.syncVersionAndDispatch(ctx, false)
@@ -900,6 +1132,7 @@ func (s *Service) scanWindowOnce(ctx context.Context, silent bool) (bool, error)
 	window, err := winwindow.FindFirst(targetWindowPattern, targetProcessNames...)
 	if err != nil {
 		if errors.Is(err, winwindow.ErrTargetWindowNotFound) {
+			s.noteWindowMissing()
 			s.mu.Lock()
 			s.lastAction = "waiting_window"
 			s.mu.Unlock()
@@ -917,6 +1150,9 @@ func (s *Service) scanWindowOnce(ctx context.Context, silent bool) (bool, error)
 	img, err := winwindow.Capture(window)
 	if err != nil {
 		return false, err
+	}
+	if s.shouldSkipWindowDecode(windowImageFingerprint(img), silent) {
+		return false, nil
 	}
 
 	ok, consumeErr := s.consumeImage(ctx, img, false)
@@ -944,6 +1180,7 @@ func (s *Service) consumeTicket(ctx context.Context, ticket, rawURL string, clea
 	s.lastQRCodeURL = rawURL
 	s.lastAction = "ticket_detected"
 	s.lastError = ""
+	s.lastErrorMessage = MessageRef{}
 	s.mu.Unlock()
 
 	if _, err := s.ScanTicket(ctx, ticket); err != nil {
@@ -982,23 +1219,180 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 	s.loginMu.Lock()
 	defer s.loginMu.Unlock()
 
+	if s.server != nil {
+		s.server.ClearChallengeState()
+	}
+
 	s.mu.Lock()
-	if account != "" {
-		s.cfg.Account = account
-	}
-	if password != "" {
-		s.cfg.Password = password
-	}
 	cfg := s.cfg.Clone()
 	s.captchaPending = false
 	s.captchaURL = ""
 	s.lastAction = "login"
 	s.lastError = ""
+	s.lastErrorMessage = MessageRef{}
 	s.quitRequested = false
 	s.mu.Unlock()
 	s.emitState()
+	keepPendingCredentials := false
+	defer func() {
+		if !keepPendingCredentials {
+			s.clearPendingCredentials()
+		}
+	}()
 
 	result := LoginResult{}
+
+	if s.bridge != nil {
+		if account == "" {
+			account = cfg.Account
+		}
+		if password == "" {
+			password = cfg.Password
+		}
+		if account != "" && password != "" {
+			s.storePendingCredentials(account, password)
+		}
+
+		var captchaReq *bridge.CaptchaPayload
+		if cap != nil {
+			captchaReq = &bridge.CaptchaPayload{
+				Challenge: config.StringValue(cap["challenge"]),
+				Validate:  config.StringValue(cap["validate"]),
+				UserID:    config.StringValue(cap["userid"]),
+			}
+		}
+
+		helperResp, err := s.bridge.Login(ctx, bridge.LoginRequest{
+			Account:       account,
+			Password:      password,
+			UID:           cfg.UID,
+			AccessKey:     cfg.AccessKey,
+			LastLoginSucc: cfg.LastLoginSucc,
+			Captcha:       captchaReq,
+		})
+		if err != nil {
+			s.setError(err)
+			return result, err
+		}
+
+		result.Message = helperResp.Message
+		if helperResp.NeedsCaptcha {
+			if err := s.startServer(); err != nil {
+				s.setError(err)
+				return result, err
+			}
+			if _, err := s.server.PrepareChallengeState(10 * time.Minute); err != nil {
+				s.setError(err)
+				return result, err
+			}
+			result.CaptchaURL = bsgamesdk.MakeCaptchaURL(
+				s.server.Addr(),
+				helperResp.CaptchaGT,
+				helperResp.CaptchaChallenge,
+				helperResp.CaptchaUserID,
+			)
+			result.NeedsCaptcha = result.CaptchaURL != ""
+
+			s.mu.Lock()
+			s.captchaPending = result.NeedsCaptcha
+			s.captchaURL = result.CaptchaURL
+			s.lastAction = "captcha_required"
+			s.mu.Unlock()
+			s.emitState()
+
+			if result.NeedsCaptcha {
+				keepPendingCredentials = true
+				s.logf("captcha verification is required before login can continue")
+				if openBrowser {
+					_ = browser.OpenURL(result.CaptchaURL)
+				}
+				return result, nil
+			}
+
+			if result.Message == "" {
+				result.MessageCode = "backend.error.bilibili_login_failed"
+				result.Message = fallbackMessageText(newMessageRef(result.MessageCode, nil))
+			}
+			return result, nil
+		}
+
+		if helperResp.VerifyRetcode != 0 {
+			err := localizedErrorf(
+				"backend.error.verify_retcode",
+				map[string]string{
+					"source":  "Mihoyo",
+					"retcode": strconv.FormatInt(helperResp.VerifyRetcode, 10),
+				},
+				"mihoyo verify retcode=%d",
+				helperResp.VerifyRetcode,
+			)
+			s.setError(err)
+			return result, err
+		}
+
+		if helperResp.AccessKey == "" {
+			if result.Message == "" {
+				result.MessageCode = "backend.error.bilibili_login_failed"
+				result.Message = fallbackMessageText(newMessageRef(result.MessageCode, nil))
+			}
+			return result, nil
+		}
+
+		result.UName = strings.TrimSpace(helperResp.UName)
+		if result.UName == "" {
+			result.UName = strings.TrimSpace(account)
+		}
+		result.SessionReady = true
+
+		s.mu.Lock()
+		if account != "" {
+			s.cfg.Account = account
+		}
+		if helperResp.UID != 0 {
+			s.cfg.UID = helperResp.UID
+		}
+		s.cfg.AccessKey = helperResp.AccessKey
+		s.cfg.LastLoginSucc = true
+		if result.UName != "" {
+			s.cfg.UName = result.UName
+		}
+		s.sessionInfo = cloneSessionInfo(&helperResp.Session)
+		s.cfg.AccountLogin = true
+		saveErr := config.Save(s.cfgPath, s.cfg)
+		s.mu.Unlock()
+		if saveErr != nil {
+			return result, saveErr
+		}
+
+		dispatchResp, err := s.syncVersionAndDispatch(ctx, true)
+		if err != nil {
+			s.setError(err)
+			return result, err
+		}
+		if dispatchResp != nil {
+			result.DispatchReady = true
+			result.DispatchSource = strings.TrimSpace(config.StringValue(dispatchResp["source"]))
+		}
+
+		s.mu.Lock()
+		s.captchaPending = false
+		s.captchaURL = ""
+		saveErr = config.Save(s.cfgPath, s.cfg)
+		s.mu.Unlock()
+		if s.server != nil {
+			s.server.ClearChallengeState()
+		}
+		if saveErr != nil {
+			return result, saveErr
+		}
+
+		result.OK = true
+		result.MessageCode = "common.ok"
+		result.Message = "ok"
+		s.logf("login completed")
+		s.emitState()
+		return result, nil
+	}
 
 	uid := fmt.Sprintf("%d", cfg.UID)
 	accessKey := cfg.AccessKey
@@ -1008,8 +1402,8 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 		info, err := s.bili.GetUserInfo(ctx, uid, accessKey)
 		if err == nil && config.StringValue(info["uname"]) != "" {
 			userInfo = info
-			result.UserInfo = info
 			result.UName = config.StringValue(info["uname"])
+			result.SessionReady = true
 		} else {
 			s.mu.Lock()
 			s.cfg.LastLoginSucc = false
@@ -1035,15 +1429,15 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 			password = cfg.Password
 		}
 		if account == "" || password == "" {
-			return result, fmt.Errorf("account and password are required")
+			return result, localizedErrorf("backend.error.credentials_required", nil, "account and password are required")
 		}
+		s.storePendingCredentials(account, password)
 
 		loginResp, err := s.bili.Login(ctx, account, password, cap)
 		if err != nil {
 			s.setError(err)
 			return result, err
 		}
-		result.BiliResponse = loginResp
 
 		accessKey = config.StringValue(loginResp["access_key"])
 		if accessKey == "" {
@@ -1051,6 +1445,10 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 			capData, capErr := s.bili.StartCaptcha(ctx)
 			if capErr == nil {
 				if err := s.startServer(); err != nil {
+					s.setError(err)
+					return result, err
+				}
+				if _, err := s.server.PrepareChallengeState(10 * time.Minute); err != nil {
 					s.setError(err)
 					return result, err
 				}
@@ -1071,6 +1469,7 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 			s.emitState()
 
 			if result.NeedsCaptcha {
+				keepPendingCredentials = true
 				s.logf("captcha verification is required before login can continue")
 				if openBrowser {
 					_ = browser.OpenURL(result.CaptchaURL)
@@ -1079,75 +1478,102 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 			}
 
 			if result.Message == "" {
-				result.Message = "bilibili login failed"
+				result.MessageCode = "backend.error.bilibili_login_failed"
+				result.Message = fallbackMessageText(newMessageRef(result.MessageCode, nil))
 			}
 			return result, nil
 		}
 
-		uid = config.StringValue(loginResp["uid"])
-		if uid == "" {
-			err = fmt.Errorf("bilibili login response missing uid")
-			s.setError(err)
-			return result, err
+		uid = strings.TrimSpace(config.StringValue(loginResp["uid"]))
+		if uid != "" {
+			info, err := s.bili.GetUserInfo(ctx, uid, accessKey)
+			if err != nil {
+				s.setError(err)
+				return result, err
+			}
+			userInfo = info
+			result.UName = config.StringValue(info["uname"])
+			if result.UName == "" {
+				err = fmt.Errorf("bilibili user info missing uname")
+				s.setError(err)
+				return result, err
+			}
 		}
-		info, err := s.bili.GetUserInfo(ctx, uid, accessKey)
-		if err != nil {
-			s.setError(err)
-			return result, err
-		}
-		userInfo = info
-		result.UserInfo = info
-		result.UName = config.StringValue(info["uname"])
 		if result.UName == "" {
-			err = fmt.Errorf("bilibili user info missing uname")
-			s.setError(err)
-			return result, err
+			result.UName = strings.TrimSpace(config.StringValue(loginResp["uname"]))
+		}
+		if result.UName == "" {
+			result.UName = strings.TrimSpace(account)
 		}
 
 		s.mu.Lock()
 		s.cfg.Account = account
-		s.cfg.Password = password
-		s.cfg.UID = config.Int64Value(uid)
+		if parsedUID := config.Int64Value(uid); parsedUID != 0 {
+			s.cfg.UID = parsedUID
+		}
 		s.cfg.AccessKey = accessKey
 		s.cfg.LastLoginSucc = true
-		s.cfg.UName = result.UName
+		if result.UName != "" {
+			s.cfg.UName = result.UName
+		}
 		saveErr := config.Save(s.cfgPath, s.cfg)
 		s.mu.Unlock()
 		if saveErr != nil {
 			return result, saveErr
 		}
 		s.logf("bilibili login succeeded")
+		result.SessionReady = true
 	}
 
-	if userInfo == nil {
+	if userInfo == nil && uid != "" {
 		info, err := s.bili.GetUserInfo(ctx, uid, accessKey)
 		if err != nil {
 			return result, err
 		}
 		userInfo = info
-		result.UserInfo = info
 		result.UName = config.StringValue(info["uname"])
 		if result.UName == "" {
 			err = fmt.Errorf("bilibili user info missing uname")
 			s.setError(err)
 			return result, err
 		}
+		result.SessionReady = true
+	}
+	if result.UName == "" {
+		result.UName = strings.TrimSpace(cfg.UName)
+	}
+	if result.UName == "" {
+		result.UName = strings.TrimSpace(account)
 	}
 
-	verifyResp, err := s.mihoyo.Verify(ctx, uid, accessKey)
+	verifyResp, err := s.mihoyo.Verify(ctx, strings.TrimSpace(uid), accessKey)
 	if err != nil {
 		s.setError(err)
 		return result, err
 	}
-	result.VerifyResponse = verifyResp
+	result.SessionReady = true
 	if config.Int64Value(verifyResp["retcode"]) != 0 {
-		err = fmt.Errorf("mihoyo verify retcode=%d", config.Int64Value(verifyResp["retcode"]))
+		err = localizedErrorf(
+			"backend.error.verify_retcode",
+			map[string]string{
+				"source":  "Mihoyo",
+				"retcode": strconv.FormatInt(config.Int64Value(verifyResp["retcode"]), 10),
+			},
+			"mihoyo verify retcode=%d",
+			config.Int64Value(verifyResp["retcode"]),
+		)
+		s.setError(err)
+		return result, err
+	}
+
+	session, err := mihoyosdk.ExtractSessionInfo(verifyResp)
+	if err != nil {
 		s.setError(err)
 		return result, err
 	}
 
 	s.mu.Lock()
-	s.bhInfo = cloneMap(verifyResp)
+	s.sessionInfo = cloneSessionInfo(session)
 	s.cfg.AccountLogin = true
 	saveErr := config.Save(s.cfgPath, s.cfg)
 	s.mu.Unlock()
@@ -1160,18 +1586,25 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 		s.setError(err)
 		return result, err
 	}
-	result.DispatchResponse = dispatchResp
+	if dispatchResp != nil {
+		result.DispatchReady = true
+		result.DispatchSource = strings.TrimSpace(config.StringValue(dispatchResp["source"]))
+	}
 
 	s.mu.Lock()
 	s.captchaPending = false
 	s.captchaURL = ""
 	saveErr = config.Save(s.cfgPath, s.cfg)
 	s.mu.Unlock()
+	if s.server != nil {
+		s.server.ClearChallengeState()
+	}
 	if saveErr != nil {
 		return result, saveErr
 	}
 
 	result.OK = true
+	result.MessageCode = "common.ok"
 	result.Message = "ok"
 	s.logf("login completed")
 	s.emitState()
@@ -1179,17 +1612,18 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 }
 
 func (s *Service) handleCaptchaResult(payload map[string]any) {
-	cfg := s.Config()
-	if cfg.Account == "" || cfg.Password == "" {
+	account, password, ok := s.pendingCredentials()
+	if !ok {
 		s.logf("captcha callback received but account credentials are missing")
 		return
 	}
 
-	go func(account, password string) {
-		if _, err := s.login(context.Background(), account, password, payload, false); err != nil {
+	go func(account string, password []byte) {
+		defer wipeBytes(password)
+		if _, err := s.login(context.Background(), account, string(password), payload, false); err != nil {
 			s.logf("captcha login continuation failed: %v", err)
 		}
-	}(cfg.Account, cfg.Password)
+	}(account, password)
 }
 
 func (s *Service) setError(err error) {
@@ -1197,13 +1631,29 @@ func (s *Service) setError(err error) {
 		return
 	}
 	message := s.sanitizeMessage(err.Error())
+	messageRef := messageRefFromError(err)
 	s.mu.Lock()
 	s.lastError = message
+	s.lastErrorMessage = messageRef
 	s.mu.Unlock()
 	if s.fileLog != nil {
 		s.fileLog.Writef("error: %s", message)
 	}
 	s.emitState()
+}
+
+func summarizeScanResult(resp map[string]any) ScanResult {
+	retcode := config.Int64Value(resp["retcode"])
+	result := ScanResult{
+		OK:        retcode == 0,
+		Confirmed: retcode == 0,
+		Retcode:   retcode,
+		Message:   strings.TrimSpace(config.StringValue(resp["message"])),
+	}
+	if result.Message == "" && retcode != 0 {
+		result.Message = "Scan confirmation did not complete."
+	}
+	return result
 }
 
 func (s *Service) logf(format string, args ...any) {
@@ -1244,17 +1694,6 @@ func (s *Service) logPath() string {
 	return s.fileLog.Path()
 }
 
-func cloneMap(src map[string]any) map[string]any {
-	if src == nil {
-		return nil
-	}
-	dst := make(map[string]any, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
-}
-
 func (s *Service) sanitizeMessage(message string) string {
 	if message == "" {
 		return ""
@@ -1266,9 +1705,11 @@ func (s *Service) sanitizeMessage(message string) string {
 	s.mu.RLock()
 	password := s.cfg.Password
 	accessKey := s.cfg.AccessKey
+	hi3uid := s.cfg.HI3UID
+	biliHitoken := s.cfg.BILIHITOKEN
 	s.mu.RUnlock()
 
-	for _, secret := range []string{password, accessKey} {
+	for _, secret := range []string{password, accessKey, hi3uid, biliHitoken} {
 		secret = strings.TrimSpace(secret)
 		if secret == "" {
 			continue
@@ -1291,58 +1732,59 @@ func maskSecret(secret string) string {
 	return secret[:2] + strings.Repeat("*", len(secret)-4) + secret[len(secret)-2:]
 }
 
-func (s *Service) syncGameVersion() (string, bool, error) {
+func (s *Service) syncGameVersion() (string, bool, *bilihitoken.ReleaseInfo, error) {
 	cfg := s.Config()
-	if cfg.GamePath == "" {
-		return "", false, nil
-	}
 
-	dir, err := gameclient.ResolveDir(cfg.GamePath)
-	if err != nil {
-		return "", false, err
-	}
-	version, err := gameclient.ReadVersion(dir)
-	if err != nil {
-		return "", false, err
-	}
+	remoteInfo, _ := s.fetchReleaseInfo(context.Background())
+	resolvedDir, localVersion := resolveLocalGameVersion(cfg.GamePath)
+	versionLogDetail := describeVersionSync(versionFromReleaseInfo(remoteInfo), localVersion)
+	selectedVersion := pickLatestVersion(
+		versionFromReleaseInfo(remoteInfo),
+		localVersion,
+		cfg.BHVer,
+	)
 
 	var (
 		changed        bool
 		versionChanged bool
+		saveErr        error
 	)
 
 	s.mu.Lock()
-	if s.cfg.GamePath != dir {
-		s.cfg.GamePath = dir
+	if resolvedDir != "" && s.cfg.GamePath != resolvedDir {
+		s.cfg.GamePath = resolvedDir
 		changed = true
 	}
-	if version != "" && s.cfg.BHVer != version {
-		s.cfg.BHVer = version
-		s.cfg.DispatchData = ""
+	if remoteInfo != nil && remoteInfo.Version != 0 && s.cfg.BiliPkgVer != remoteInfo.Version {
+		s.cfg.BiliPkgVer = remoteInfo.Version
+		changed = true
+	}
+	if selectedVersion != "" && s.cfg.BHVer != selectedVersion {
+		s.cfg.BHVer = selectedVersion
+		s.cfg.ClearDispatchSnapshot()
 		changed = true
 		versionChanged = true
 	}
-	var saveErr error
 	if changed {
 		saveErr = config.Save(s.cfgPath, s.cfg)
 	}
 	s.mu.Unlock()
 	if saveErr != nil {
-		return "", false, saveErr
+		return "", false, remoteInfo, saveErr
 	}
 
 	if versionChanged {
 		s.mihoyo.ResetCache()
-		s.logf("detected local BH3 version %s", version)
+		s.logf("selected BH3 version %s (%s)", selectedVersion, versionLogDetail)
 	}
 	if changed {
 		s.emitState()
 	}
-	return version, versionChanged, nil
+	return selectedVersion, versionChanged, remoteInfo, nil
 }
 
 func (s *Service) syncVersionAndDispatch(ctx context.Context, forceDispatch bool) (map[string]any, error) {
-	version, versionChanged, err := s.syncGameVersion()
+	version, versionChanged, remoteInfo, err := s.syncGameVersion()
 	if err != nil {
 		return nil, err
 	}
@@ -1371,11 +1813,12 @@ func (s *Service) syncVersionAndDispatch(ctx context.Context, forceDispatch bool
 		return resp, nil
 	}
 
-	return s.refreshDispatchData(ctx)
+	return s.refreshDispatchData(ctx, version, remoteInfo)
 }
 
-func (s *Service) refreshDispatchData(ctx context.Context) (map[string]any, error) {
+func (s *Service) refreshDispatchData(ctx context.Context, version string, remoteInfo *bilihitoken.ReleaseInfo) (map[string]any, error) {
 	cfg := s.Config()
+	_, localVersion := resolveLocalGameVersion(cfg.GamePath)
 	openID := s.currentOpenID()
 	if openID == "" && cfg != nil {
 		openID = cfg.HI3UID
@@ -1388,185 +1831,105 @@ func (s *Service) refreshDispatchData(ctx context.Context) (map[string]any, erro
 	if uid == "" && cfg != nil {
 		uid = cfg.HI3UID
 	}
-	// If no credential hints at all, skip silent refresh
 	if openID == "" && comboToken == "" && uid == "" {
 		return nil, nil
 	}
 
-	// 自动检测远端包版本并在需要时尝试补全或更新 BILIHITOKEN/BiliPkgVer/BHVer。
-	// 行为：
-	// - 先尝试从远端获取 GameInfo；若失败则记录日志并跳过。
-	// - 若本地缺少 BHVer/BiliPkgVer/BILIHITOKEN 中的任意字段，尝试补全并保存。
-	// - 若远端版本与本地不同，记录变更并尝试拉取新的 dispatch token 并持久化。
-	if cfg != nil {
-		httpClient := netutil.NewClient()
-		info, err := bilihitoken.FetchGameInfo(httpClient)
+	if remoteInfo == nil {
+		info, err := s.fetchReleaseInfo(ctx)
 		if err != nil {
-			msg := fmt.Sprintf("fetch gameinfo failed: %v", err)
-			s.logf("%s", msg)
-			if s.fileLog != nil {
-				s.fileLog.Writef("%s", msg)
-			}
+			s.logf("fetch release info failed: %v", err)
 		} else {
-			// BHVer 检查与补全
-			if strings.TrimSpace(cfg.BHVer) == "" && info.BHVer != "" {
+			remoteInfo = info
+		}
+	}
+
+	if remoteInfo != nil {
+		versionLogDetail := describeVersionSync(remoteInfo.BHVer, localVersion)
+		version = pickLatestVersion(version, remoteInfo.BHVer, cfg.BHVer)
+		if strings.TrimSpace(cfg.BILIHITOKEN) == "" && remoteInfo.Version != 0 {
+			tokenResp, err := s.fetchCredential(ctx)
+			if err == nil && strings.TrimSpace(tokenResp.Token) != "" {
 				s.mu.Lock()
-				s.cfg.BHVer = info.BHVer
+				s.cfg.BILIHITOKEN = tokenResp.Token
+				s.cfg.BiliPkgVer = tokenResp.Version
+				s.cfg.BHVer = pickLatestVersion(s.cfg.BHVer, tokenResp.BHVer)
 				_ = config.Save(s.cfgPath, s.cfg)
 				s.mu.Unlock()
-				msg := fmt.Sprintf("filled BHVer=%s from remote", info.BHVer)
-				s.logf("%s", msg)
-				if s.fileLog != nil {
-					s.fileLog.Writef("%s", msg)
-				}
-			} else if info.BHVer != "" && strings.TrimSpace(cfg.BHVer) != "" && info.BHVer != cfg.BHVer {
-				msg := fmt.Sprintf("BHVer changed: %s -> %s", cfg.BHVer, info.BHVer)
-				s.logf("%s", msg)
-				if s.fileLog != nil {
-					s.fileLog.Writef("%s", msg)
-				}
+				cfg.BILIHITOKEN = tokenResp.Token
+				cfg.BiliPkgVer = tokenResp.Version
+				cfg.BHVer = pickLatestVersion(cfg.BHVer, tokenResp.BHVer)
+				version = pickLatestVersion(version, cfg.BHVer)
+				comboToken = tokenResp.Token
+				s.logf("filled missing BILIHITOKEN via remote fetch; pkg_ver=%d %s", tokenResp.Version, versionLogDetail)
+			} else {
+				s.logf("failed to fill missing BILIHITOKEN: %v", err)
+			}
+		}
+
+		if remoteInfo.Version != 0 && remoteInfo.Version != cfg.BiliPkgVer {
+			tokenResp, err := s.fetchCredential(ctx)
+			if err == nil && strings.TrimSpace(tokenResp.Token) != "" {
 				s.mu.Lock()
-				s.cfg.BHVer = info.BHVer
+				s.cfg.BILIHITOKEN = tokenResp.Token
+				s.cfg.BiliPkgVer = tokenResp.Version
+				s.cfg.BHVer = pickLatestVersion(s.cfg.BHVer, tokenResp.BHVer)
 				_ = config.Save(s.cfgPath, s.cfg)
 				s.mu.Unlock()
-			} else if info.BHVer != "" {
-				msg := fmt.Sprintf("BHVer consistent: %s", cfg.BHVer)
-				s.logf("%s", msg)
-				if s.fileLog != nil {
-					s.fileLog.Writef("%s", msg)
-				}
-			}
-
-			// BiliPkgVer 检查与补全
-			if cfg.BiliPkgVer == 0 {
-				if info.Version != 0 {
-					s.mu.Lock()
-					s.cfg.BiliPkgVer = info.Version
-					_ = config.Save(s.cfgPath, s.cfg)
-					s.mu.Unlock()
-					msg := fmt.Sprintf("filled BiliPkgVer=%d from remote", info.Version)
-					s.logf("%s", msg)
-					if s.fileLog != nil {
-						s.fileLog.Writef("%s", msg)
-					}
-				} else {
-					msg := "remote BiliPkgVer unknown; local is 0"
-					s.logf("%s", msg)
-					if s.fileLog != nil {
-						s.fileLog.Writef("%s", msg)
-					}
-				}
-			} else if info.Version != 0 && info.Version == cfg.BiliPkgVer {
-				msg := fmt.Sprintf("BiliPkgVer consistent: %d", cfg.BiliPkgVer)
-				s.logf("%s", msg)
-				if s.fileLog != nil {
-					s.fileLog.Writef("%s", msg)
-				}
-			} else if info.Version != 0 && info.Version != cfg.BiliPkgVer {
-				msg := fmt.Sprintf("BiliPkgVer changed: %d -> %d", cfg.BiliPkgVer, info.Version)
-				s.logf("%s", msg)
-				// 远端版本变化，尝试获取新的 token（仅在能成功获取时保存）
-				if s.fileLog != nil {
-					s.fileLog.Writef("%s", msg)
-				}
-				token, err := bilihitoken.FetchDispatchToken(httpClient, info.APKUrl)
-				if err == nil && strings.TrimSpace(token) != "" {
-					s.mu.Lock()
-					s.cfg.BILIHITOKEN = token
-					s.cfg.BiliPkgVer = info.Version
-					if info.BHVer != "" {
-						s.cfg.BHVer = info.BHVer
-					}
-					_ = config.Save(s.cfgPath, s.cfg)
-					s.mu.Unlock()
-					comboToken = s.cfg.BILIHITOKEN
-					msg2 := fmt.Sprintf("auto-updated BILIHITOKEN to pkg_ver=%d", info.Version)
-					s.logf("%s", msg2)
-					if s.fileLog != nil {
-						s.fileLog.Writef("%s", msg2)
-					}
-				} else {
-					msg2 := fmt.Sprintf("auto-update BILIHITOKEN failed: %v", err)
-					s.logf("%s", msg2)
-					if s.fileLog != nil {
-						s.fileLog.Writef("%s", msg2)
-					}
-					s.mu.Lock()
-					s.lastError = "自动更新 BILIHITOKEN 失败，请手动获取"
-					s.mu.Unlock()
-					s.emitState()
-				}
-			}
-
-			// 若本地缺少 BILIHITOKEN，尝试补全（在有 remote info 且已设置 game path 时尝试）
-			if strings.TrimSpace(cfg.BILIHITOKEN) == "" {
-				if strings.TrimSpace(cfg.GamePath) != "" && info.Version != 0 {
-					token, err := bilihitoken.FetchDispatchToken(httpClient, info.APKUrl)
-					if err == nil && strings.TrimSpace(token) != "" {
-						s.mu.Lock()
-						s.cfg.BILIHITOKEN = token
-						if info.Version != 0 {
-							s.cfg.BiliPkgVer = info.Version
-						}
-						if info.BHVer != "" {
-							s.cfg.BHVer = info.BHVer
-						}
-						_ = config.Save(s.cfgPath, s.cfg)
-						s.mu.Unlock()
-						comboToken = s.cfg.BILIHITOKEN
-						msg := fmt.Sprintf("filled missing BILIHITOKEN via remote fetch; pkg_ver=%d", info.Version)
-						s.logf("%s", msg)
-						if s.fileLog != nil {
-							s.fileLog.Writef("%s", msg)
-						}
-					} else {
-						msg := fmt.Sprintf("failed to fill missing BILIHITOKEN: %v", err)
-						s.logf("%s", msg)
-						if s.fileLog != nil {
-							s.fileLog.Writef("%s", msg)
-						}
-					}
-				} else {
-					msg := "BILIHITOKEN missing and GamePath not set or remote version unknown; skipping auto-fill"
-					s.logf("%s", msg)
-					if s.fileLog != nil {
-						s.fileLog.Writef("%s", msg)
-					}
-				}
+				cfg.BILIHITOKEN = tokenResp.Token
+				cfg.BiliPkgVer = tokenResp.Version
+				cfg.BHVer = pickLatestVersion(cfg.BHVer, tokenResp.BHVer)
+				version = pickLatestVersion(version, cfg.BHVer)
+				comboToken = tokenResp.Token
+				s.logf("auto-updated BILIHITOKEN to pkg_ver=%d %s", tokenResp.Version, versionLogDetail)
+			} else {
+				s.logf("auto-update BILIHITOKEN failed: %v", err)
+				s.mu.Lock()
+				s.lastErrorMessage = newMessageRef("backend.error.auto_fetch_bilihitoken_failed", nil)
+				s.lastError = fallbackMessageText(s.lastErrorMessage)
+				s.mu.Unlock()
+				s.emitState()
 			}
 		}
 	}
 
+	if strings.TrimSpace(version) == "" && cfg != nil {
+		version = strings.TrimSpace(cfg.BHVer)
+	}
+	if version != "" {
+		cfg.BHVer = version
+	}
+
 	s.mihoyo.ResetDispatchCache()
 
-	resp, err := s.mihoyo.GetOAServer(ctx, openID, comboToken, uid, cfg)
+	resp, err := s.resolveDispatch(ctx, cfg, uid, version)
 	if err != nil {
 		return nil, err
 	}
 	if retcode := config.Int64Value(resp["retcode"]); retcode != 0 && resp["retcode"] != nil {
-		return resp, fmt.Errorf("dispatch retcode=%d", retcode)
+		return resp, localizedErrorf(
+			"backend.error.dispatch_retcode",
+			map[string]string{"retcode": strconv.FormatInt(retcode, 10)},
+			"dispatch retcode=%d",
+			retcode,
+		)
 	}
 
 	dispatchData := config.StringValue(resp["data"])
 	if dispatchData == "" {
-		return resp, fmt.Errorf("dispatch response missing data")
+		return resp, localizedErrorf("backend.error.dispatch_missing_data", nil, "dispatch response missing data")
 	}
 	if !mihoyosdk.LooksLikeFinalDispatch(dispatchData) {
-		return resp, fmt.Errorf("dispatch response is not a usable final blob")
+		return resp, localizedErrorf("backend.error.dispatch_invalid_blob", nil, "dispatch response is not a usable final blob")
 	}
 
 	entry := buildDispatchCacheEntry(resp)
-	cacheKey := dispatchCacheKey(cfg.BHVer)
 
 	s.mu.Lock()
-	s.cfg.DispatchData = dispatchData
-	if s.cfg.DispatchCache == nil {
-		s.cfg.DispatchCache = map[string]config.DispatchCacheEntry{}
+	if version != "" {
+		s.cfg.BHVer = version
 	}
-	if cacheKey != "" {
-		s.cfg.DispatchCache[cacheKey] = entry
-		s.cfg.DispatchCache = trimDispatchCache(s.cfg.DispatchCache)
-	}
+	s.cfg.SetDispatchSnapshot(version, entry)
 	saveErr := config.Save(s.cfgPath, s.cfg)
 	currentVersion := s.cfg.BHVer
 	s.mu.Unlock()
@@ -1577,15 +1940,10 @@ func (s *Service) refreshDispatchData(ctx context.Context) (map[string]any, erro
 	s.applyDispatchState(resp)
 
 	source := config.StringValue(resp["source"])
-	requestMode := config.StringValue(resp["request_mode"])
 	if source == "" {
 		source = "unknown"
 	}
-	if requestMode != "" {
-		s.logf("dispatch refreshed for version %s via %s", currentVersion, source)
-	} else {
-		s.logf("dispatch refreshed for version %s via %s", currentVersion, source)
-	}
+	s.logf("dispatch refreshed for version %s via %s", currentVersion, source)
 	s.emitState()
 	return resp, nil
 }
@@ -1593,46 +1951,49 @@ func (s *Service) refreshDispatchData(ctx context.Context) (map[string]any, erro
 // ManualRefreshDispatch sets HI3UID and BILIHITOKEN in config and triggers a dispatch refresh.
 func (s *Service) ManualRefreshDispatch(ctx context.Context, hi3uid, biliHitoken string) (State, error) {
 	s.mu.Lock()
-	s.cfg.HI3UID = strings.TrimSpace(hi3uid)
-	s.cfg.BILIHITOKEN = strings.TrimSpace(biliHitoken)
+	if uid := strings.TrimSpace(hi3uid); uid != "" {
+		s.cfg.HI3UID = uid
+	}
+	if token := strings.TrimSpace(biliHitoken); token != "" {
+		s.cfg.BILIHITOKEN = token
+	}
+	if strings.TrimSpace(s.cfg.HI3UID) == "" || strings.TrimSpace(s.cfg.BILIHITOKEN) == "" {
+		s.mu.Unlock()
+		return s.State(), fmt.Errorf("HI3UID and BILIHITOKEN are required")
+	}
 	if err := config.Save(s.cfgPath, s.cfg); err != nil {
 		s.mu.Unlock()
 		return s.State(), err
 	}
 	s.mu.Unlock()
 
-	// Attempt refresh
-	_, err := s.refreshDispatchData(ctx)
+	version, _, remoteInfo, versionErr := s.syncGameVersion()
+	if versionErr != nil {
+		return s.State(), versionErr
+	}
+	_, err := s.refreshDispatchData(ctx, version, remoteInfo)
 	s.emitState()
 	return s.State(), err
 }
 
-// ManualFetchBiliHitoken attempts to fetch a fresh BILIHITOKEN from the remote APK
-// and saves it into config. Requires game path to be set locally.
+// ManualFetchBiliHitoken attempts to refresh a local BILIHITOKEN
+// through the configured private provider and saves it into config.
 func (s *Service) ManualFetchBiliHitoken(ctx context.Context) (State, error) {
 	cfg := s.Config()
-	if cfg == nil || strings.TrimSpace(cfg.GamePath) == "" {
-		return s.State(), fmt.Errorf("game path is not set")
-	}
-
-	httpClient := netutil.NewClient()
-	info, err := bilihitoken.FetchGameInfo(httpClient)
+	_, localVersion := resolveLocalGameVersion(cfg.GamePath)
+	info, err := s.fetchCredential(ctx)
 	if err != nil {
 		return s.State(), err
 	}
-	token, err := bilihitoken.FetchDispatchToken(httpClient, info.APKUrl)
-	if err != nil {
-		return s.State(), err
-	}
-	if strings.TrimSpace(token) == "" {
-		return s.State(), fmt.Errorf("fetched empty BILIHITOKEN")
+	if strings.TrimSpace(info.Token) == "" {
+		return s.State(), localizedErrorf("backend.error.empty_bilihitoken", nil, "fetched empty BILIHITOKEN")
 	}
 
 	s.mu.Lock()
-	s.cfg.BILIHITOKEN = token
+	s.cfg.BILIHITOKEN = info.Token
 	s.cfg.BiliPkgVer = info.Version
 	if info.BHVer != "" {
-		s.cfg.BHVer = info.BHVer
+		s.cfg.BHVer = pickLatestVersion(s.cfg.BHVer, info.BHVer)
 	}
 	saveErr := config.Save(s.cfgPath, s.cfg)
 	s.mu.Unlock()
@@ -1640,11 +2001,10 @@ func (s *Service) ManualFetchBiliHitoken(ctx context.Context) (State, error) {
 		return s.State(), saveErr
 	}
 
-	s.logf("manually fetched BILIHITOKEN pkg_ver=%d", info.Version)
+	s.logf("manually fetched BILIHITOKEN pkg_ver=%d %s", info.Version, describeVersionSync(info.BHVer, localVersion))
 	s.emitState()
 	return s.State(), nil
 }
-
 func (s *Service) useConfiguredDispatch(version string) (map[string]any, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1652,31 +2012,20 @@ func (s *Service) useConfiguredDispatch(version string) (map[string]any, bool, e
 	if !mihoyosdk.LooksLikeFinalDispatch(s.cfg.DispatchData) {
 		return nil, false, nil
 	}
-	officialMode := strings.TrimSpace(s.cfg.DispatchAPI) == "" || strings.Contains(strings.ToLower(strings.TrimSpace(s.cfg.DispatchAPI)), "query_gameserver") || strings.Contains(strings.ToLower(strings.TrimSpace(s.cfg.DispatchAPI)), "outer-dp-bb01.bh3.com")
+	officialMode := mihoyosdk.UsesPrivateDispatch(s.cfg.DispatchAPI)
 	if officialMode {
 		// In official mode, always prefer official request path over static dispatch_data.
 		return nil, false, nil
 	}
 
-	key := dispatchCacheKey(version)
-	if key == "" {
-		return nil, false, nil
-	}
-
-	if s.cfg.DispatchCache == nil {
-		s.cfg.DispatchCache = map[string]config.DispatchCacheEntry{}
-	}
-
-	entry, ok := s.cfg.DispatchCache[key]
+	key := config.NormalizeDispatchVersion(version)
+	entry := buildDispatchCacheEntry(map[string]any{
+		"data":   s.cfg.DispatchData,
+		"source": "local_config",
+	})
 	changed := false
-	if !ok || entry.Data != s.cfg.DispatchData {
-		entry = buildDispatchCacheEntry(map[string]any{
-			"data":   s.cfg.DispatchData,
-			"source": "local_config",
-		})
-		s.cfg.DispatchCache[key] = entry
-		s.cfg.DispatchCache = trimDispatchCache(s.cfg.DispatchCache)
-		changed = true
+	if key != "" {
+		changed = s.cfg.SetDispatchSnapshot(key, entry)
 	}
 
 	if changed {
@@ -1689,7 +2038,7 @@ func (s *Service) useConfiguredDispatch(version string) (map[string]any, bool, e
 }
 
 func (s *Service) activateCachedDispatch(version string) (map[string]any, bool, error) {
-	key := dispatchCacheKey(version)
+	key := config.NormalizeDispatchVersion(version)
 	if key == "" {
 		return nil, false, nil
 	}
@@ -1697,20 +2046,17 @@ func (s *Service) activateCachedDispatch(version string) (map[string]any, bool, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entry, ok := s.cfg.DispatchCache[key]
-	if !ok || !mihoyosdk.LooksLikeFinalDispatch(entry.Data) {
+	snapshotVersion, entry, ok := s.cfg.DispatchSnapshot()
+	if !ok || snapshotVersion != key || !mihoyosdk.LooksLikeFinalDispatch(entry.Data) {
 		return nil, false, nil
 	}
-	officialMode := strings.TrimSpace(s.cfg.DispatchAPI) == "" || strings.Contains(strings.ToLower(strings.TrimSpace(s.cfg.DispatchAPI)), "query_gameserver") || strings.Contains(strings.ToLower(strings.TrimSpace(s.cfg.DispatchAPI)), "outer-dp-bb01.bh3.com")
-	if officialMode && shouldSkipOfficialCacheSource(entry.Source) {
+	officialMode := mihoyosdk.UsesPrivateDispatch(s.cfg.DispatchAPI)
+	if officialMode && mihoyosdk.ShouldSkipPreferredDispatchCacheSource(entry.Source) {
 		return nil, false, nil
 	}
 
 	changed := false
-	if s.cfg.DispatchData != entry.Data {
-		s.cfg.DispatchData = entry.Data
-		changed = true
-	}
+	changed = s.cfg.SetDispatchSnapshot(key, entry)
 	if changed {
 		if err := config.Save(s.cfgPath, s.cfg); err != nil {
 			return nil, false, err
@@ -1720,24 +2066,15 @@ func (s *Service) activateCachedDispatch(version string) (map[string]any, bool, 
 	return dispatchResponseFromCache(key, entry, "local_cache"), true, nil
 }
 
-func dispatchCacheKey(version string) string {
-	version = strings.TrimSpace(version)
-	if version == "" {
-		return ""
-	}
-	if strings.Contains(version, "_gf_") {
-		return version
-	}
-	return version + "_gf_android_bilibili"
-}
-
 func dispatchResponseFromCache(key string, entry config.DispatchCacheEntry, source string) map[string]any {
 	resp := map[string]any{
-		"retcode":   0,
-		"message":   "OK",
-		"data":      entry.Data,
-		"source":    source,
-		"cache_key": key,
+		"retcode": 0,
+		"message": "OK",
+		"data":    entry.Data,
+		"source":  source,
+	}
+	if key != "" {
+		resp["cache_key"] = key
 	}
 
 	if entry.Source != "" {
@@ -1780,35 +2117,6 @@ func buildDispatchCacheEntry(resp map[string]any) config.DispatchCacheEntry {
 	return entry
 }
 
-func trimDispatchCache(cache map[string]config.DispatchCacheEntry) map[string]config.DispatchCacheEntry {
-	if len(cache) <= maxDispatchCaches {
-		return cache
-	}
-
-	type cacheItem struct {
-		key     string
-		savedAt string
-	}
-
-	items := make([]cacheItem, 0, len(cache))
-	for key, entry := range cache {
-		items = append(items, cacheItem{key: key, savedAt: entry.SavedAt})
-	}
-
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].savedAt == items[j].savedAt {
-			return items[i].key < items[j].key
-		}
-		return items[i].savedAt < items[j].savedAt
-	})
-
-	trimmed := make(map[string]config.DispatchCacheEntry, maxDispatchCaches)
-	for _, item := range items[len(items)-maxDispatchCaches:] {
-		trimmed[item.key] = cache[item.key]
-	}
-	return trimmed
-}
-
 func (s *Service) applyDispatchState(resp map[string]any) {
 	source := strings.TrimSpace(config.StringValue(resp["source"]))
 	if source == "" {
@@ -1844,24 +2152,123 @@ func (s *Service) logAvailableDispatchSource() {
 	}
 }
 
+func (s *Service) fetchReleaseInfo(ctx context.Context) (*bilihitoken.ReleaseInfo, error) {
+	if s.bridge != nil {
+		info, err := s.bridge.FetchReleaseInfo(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return &bilihitoken.ReleaseInfo{
+			Version: info.Version,
+			BHVer:   strings.TrimSpace(info.BHVer),
+		}, nil
+	}
+	return bilihitoken.FetchReleaseInfo(netutil.NewClient())
+}
+
+func (s *Service) fetchCredential(ctx context.Context) (bridge.CredentialResponse, error) {
+	if s.bridge != nil {
+		return s.bridge.FetchCredential(ctx)
+	}
+	httpClient := netutil.NewClient()
+	info, err := bilihitoken.FetchReleaseInfo(httpClient)
+	if err != nil {
+		return bridge.CredentialResponse{}, err
+	}
+	token, err := bilihitoken.FetchCredential(httpClient, info.PackageURL)
+	if err != nil {
+		return bridge.CredentialResponse{}, err
+	}
+	return bridge.CredentialResponse{
+		Token:   strings.TrimSpace(token),
+		Version: info.Version,
+		BHVer:   strings.TrimSpace(info.BHVer),
+	}, nil
+}
+
+func (s *Service) resolveDispatch(ctx context.Context, cfg *config.Config, uid, version string) (map[string]any, error) {
+	if s.bridge != nil {
+		resp, err := s.bridge.ResolveDispatch(ctx, bridge.DispatchRequest{
+			Config:  bridgeConfigSnapshot(cfg),
+			UID:     uid,
+			Version: version,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return dispatchResponseFromBridge(resp), nil
+	}
+	return s.mihoyo.GetOAServer(ctx, uid, cfg)
+}
+
+func bridgeConfigSnapshot(cfg *config.Config) bridge.ConfigSnapshot {
+	if cfg == nil {
+		cfg = config.Default()
+	}
+	return bridge.ConfigSnapshot{
+		GamePath:              cfg.GamePath,
+		BHVer:                 cfg.BHVer,
+		BiliPkgVer:            cfg.BiliPkgVer,
+		VersionAPI:            cfg.VersionAPI,
+		DispatchAPI:           cfg.DispatchAPI,
+		DispatchData:          cfg.DispatchData,
+		DispatchVersion:       cfg.DispatchVersion,
+		DispatchSource:        cfg.DispatchSource,
+		DispatchRawLen:        cfg.DispatchRawLen,
+		DispatchDecodedLen:    cfg.DispatchDecodedLen,
+		DispatchDecodedSHA256: cfg.DispatchDecodedSHA256,
+		DispatchSavedAt:       cfg.DispatchSavedAt,
+		BILIHITOKEN:           cfg.BILIHITOKEN,
+		HI3UID:                cfg.HI3UID,
+	}
+}
+
+func dispatchResponseFromBridge(resp bridge.DispatchResponse) map[string]any {
+	out := map[string]any{
+		"retcode": resp.Retcode,
+		"message": resp.Message,
+		"data":    resp.Data,
+		"source":  resp.Source,
+	}
+	if resp.CachedSource != "" {
+		out["cached_source"] = resp.CachedSource
+	}
+	if resp.CachedSavedAt != "" {
+		out["cached_saved_at"] = resp.CachedSavedAt
+	}
+	if resp.BlobSummary.RawLen > 0 || resp.BlobSummary.DecodedLen > 0 || resp.BlobSummary.DecodedSHA256 != "" {
+		out["blob_summary"] = map[string]any{
+			"raw_len":        resp.BlobSummary.RawLen,
+			"decoded_len":    resp.BlobSummary.DecodedLen,
+			"decoded_sha256": resp.BlobSummary.DecodedSHA256,
+		}
+	}
+	return out
+}
+
 func (s *Service) currentOpenID() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return openIDFromVerifyResponse(s.bhInfo)
+	if s.sessionInfo == nil {
+		return ""
+	}
+	return s.sessionInfo.OpenID
 }
 
 func (s *Service) currentComboToken() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return comboTokenFromVerifyResponse(s.bhInfo)
+	if s.sessionInfo == nil {
+		return ""
+	}
+	return s.sessionInfo.ComboToken
 }
 
 func (s *Service) currentUID() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	uid := uidFromVerifyResponse(s.bhInfo)
-	if uid != "" {
-		return uid
+	if s.sessionInfo != nil && s.sessionInfo.UID != "" {
+		return s.sessionInfo.UID
 	}
 	if s.cfg != nil && s.cfg.UID != 0 {
 		return fmt.Sprintf("%d", s.cfg.UID)
@@ -1869,42 +2276,114 @@ func (s *Service) currentUID() string {
 	return ""
 }
 
-func openIDFromVerifyResponse(resp map[string]any) string {
-	if resp == nil {
-		return ""
+func cloneSessionInfo(src *mihoyosdk.SessionInfo) *mihoyosdk.SessionInfo {
+	if src == nil {
+		return nil
 	}
-	data, ok := resp["data"].(map[string]any)
-	if !ok {
-		return ""
-	}
-	return config.StringValue(data["open_id"])
+	clone := *src
+	return &clone
 }
 
-func comboTokenFromVerifyResponse(resp map[string]any) string {
-	if resp == nil {
-		return ""
+func sanitizeResultMessage(result map[string]any) string {
+	if result == nil {
+		return "unknown"
 	}
-	data, ok := resp["data"].(map[string]any)
-	if !ok {
-		return ""
+	message := strings.TrimSpace(config.StringValue(result["message"]))
+	if message == "" {
+		return "unknown"
 	}
-	return config.StringValue(data["combo_token"])
+	return strings.ReplaceAll(sanitizeMessageStatic(message), "\n", " ")
 }
 
-func uidFromVerifyResponse(resp map[string]any) string {
-	if resp == nil {
-		return ""
+func sanitizeMessageStatic(message string) string {
+	for _, rule := range sensitiveLogRules {
+		message = rule.pattern.ReplaceAllString(message, rule.replacement)
 	}
-	data, ok := resp["data"].(map[string]any)
-	if !ok {
-		return ""
-	}
-	return config.StringValue(data["uid"])
+	return message
 }
 
-func shouldSkipOfficialCacheSource(source string) bool {
-	source = strings.TrimSpace(strings.ToLower(source))
-	return source == "" || source == "reference_third_party" || source == "custom_dispatch_api"
+func wipeBytes(data []byte) {
+	for i := range data {
+		data[i] = 0
+	}
+}
+
+func (s *Service) storePendingCredentials(account, password string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingPasswordGen++
+	s.clearPendingCredentialsLocked()
+	s.pendingAccount = strings.TrimSpace(account)
+	s.pendingPassword = append([]byte(nil), []byte(password)...)
+	s.pendingPasswordTTL = time.Now().Add(pendingCredentialTTL)
+	gen := s.pendingPasswordGen
+	s.pendingPasswordTmr = time.AfterFunc(pendingCredentialTTL, func() {
+		s.expirePendingCredentials(gen)
+	})
+}
+
+func (s *Service) clearPendingCredentials() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingPasswordGen++
+	s.clearPendingCredentialsLocked()
+}
+
+func (s *Service) clearPendingCredentialsLocked() {
+	if s.pendingPasswordTmr != nil {
+		s.pendingPasswordTmr.Stop()
+		s.pendingPasswordTmr = nil
+	}
+	if len(s.pendingPassword) > 0 {
+		wipeBytes(s.pendingPassword)
+	}
+	s.pendingPassword = nil
+	s.pendingAccount = ""
+	s.pendingPasswordTTL = time.Time{}
+}
+
+func (s *Service) pendingCredentials() (string, []byte, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strings.TrimSpace(s.pendingAccount) == "" || len(s.pendingPassword) == 0 {
+		return "", nil, false
+	}
+	if !s.pendingPasswordTTL.IsZero() && time.Now().After(s.pendingPasswordTTL) {
+		s.clearPendingCredentialsLocked()
+		return "", nil, false
+	}
+	password := append([]byte(nil), s.pendingPassword...)
+	return s.pendingAccount, password, true
+}
+
+func (s *Service) expirePendingCredentials(generation uint64) {
+	clearChallengeState := false
+	shouldEmit := false
+
+	s.mu.Lock()
+	if generation != s.pendingPasswordGen || strings.TrimSpace(s.pendingAccount) == "" || len(s.pendingPassword) == 0 {
+		s.mu.Unlock()
+		return
+	}
+	s.clearPendingCredentialsLocked()
+	if s.captchaPending || s.captchaURL != "" {
+		s.captchaPending = false
+		s.captchaURL = ""
+		if s.lastAction == "captcha_required" {
+			s.lastAction = "captcha_expired"
+		}
+		clearChallengeState = true
+		shouldEmit = true
+	}
+	s.mu.Unlock()
+
+	if clearChallengeState && s.server != nil {
+		s.server.ClearChallengeState()
+	}
+	s.logf("captcha login timed out; pending credentials cleared")
+	if shouldEmit {
+		s.emitState()
+	}
 }
 
 func clampBackgroundOpacity(value float64) float64 {
@@ -1931,18 +2410,43 @@ func samePath(left, right string) bool {
 	return strings.EqualFold(left, right)
 }
 
-func managedBackgroundPathFor(sourcePath string) (string, error) {
+func managedBackgroundPathFor() (string, error) {
 	// Store managed background in the executable directory so packaged apps carry it alongside the binary.
 	exePath, err := os.Executable()
 	if err != nil {
 		return "", fmt.Errorf("resolve executable path: %w", err)
 	}
 	exeDir := filepath.Dir(exePath)
-	ext := strings.ToLower(strings.TrimSpace(filepath.Ext(sourcePath)))
-	if ext == "" {
-		ext = ".img"
+	return filepath.Join(exeDir, managedBackgroundBaseName+managedBackgroundExt), nil
+}
+
+func backgroundContentType(path string, data []byte) string {
+	ext := strings.ToLower(strings.TrimSpace(filepath.Ext(path)))
+	if ext == managedBackgroundExt {
+		return "image/webp"
 	}
-	return filepath.Join(exeDir, managedBackgroundBaseName+ext), nil
+	contentType := mime.TypeByExtension(ext)
+	if contentType == "" {
+		contentType = http.DetectContentType(data)
+	}
+	return contentType
+}
+
+func encodeManagedBackground(source []byte) ([]byte, error) {
+	img, _, err := image.Decode(bytes.NewReader(source))
+	if err != nil {
+		return nil, fmt.Errorf("decode background image: %w", err)
+	}
+
+	var buf bytes.Buffer
+	if err := purewebp.Encode(&buf, img, &purewebp.EncoderOptions{
+		Quality: 80,
+		Method:  4,
+		Preset:  purewebp.PresetPhoto,
+	}); err != nil {
+		return nil, fmt.Errorf("encode background image: %w", err)
+	}
+	return buf.Bytes(), nil
 }
 
 func loadBackgroundDataURL(path string) (string, error) {
@@ -1965,10 +2469,7 @@ func loadBackgroundDataURL(path string) (string, error) {
 			return "", fmt.Errorf("read background image: %w", err)
 		}
 	}
-	contentType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
-	if contentType == "" {
-		contentType = http.DetectContentType(data)
-	}
+	contentType := backgroundContentType(path, data)
 	if !strings.HasPrefix(strings.ToLower(contentType), "image/") {
 		return "", fmt.Errorf("selected file is not an image")
 	}
@@ -1984,19 +2485,21 @@ func (s *Service) copyManagedBackground(sourcePath, previousPath string) (string
 	if err != nil {
 		return "", "", fmt.Errorf("read background image: %w", err)
 	}
-	contentType := mime.TypeByExtension(strings.ToLower(filepath.Ext(sourcePath)))
-	if contentType == "" {
-		contentType = http.DetectContentType(data)
-	}
+	contentType := backgroundContentType(sourcePath, data)
 	if !strings.HasPrefix(strings.ToLower(contentType), "image/") {
 		return "", "", fmt.Errorf("selected file is not an image")
 	}
 
-	destAbsPath, err := managedBackgroundPathFor(sourcePath)
+	encodedData, err := encodeManagedBackground(data)
 	if err != nil {
 		return "", "", err
 	}
-	if err := os.WriteFile(destAbsPath, data, 0o644); err != nil {
+
+	destAbsPath, err := managedBackgroundPathFor()
+	if err != nil {
+		return "", "", err
+	}
+	if err := config.AtomicWriteFile(destAbsPath, encodedData, 0o644); err != nil {
 		return "", "", fmt.Errorf("write background image: %w", err)
 	}
 
@@ -2005,21 +2508,148 @@ func (s *Service) copyManagedBackground(sourcePath, previousPath string) (string
 		_ = os.Remove(previousPath)
 	}
 
-	sum := sha256.Sum256(data)
-	s.logf("background image copied to %s (%s)", destAbsPath, hex.EncodeToString(sum[:8]))
+	sum := sha256.Sum256(encodedData)
+	s.logf(
+		"background image imported as %s (%s, %d -> %d bytes)",
+		destAbsPath,
+		hex.EncodeToString(sum[:8]),
+		len(data),
+		len(encodedData),
+	)
 
 	// Store relative path in config for portability (relative to executable dir)
 	rel := "./" + filepath.Base(destAbsPath)
-	return rel, "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+	return rel, "data:image/webp;base64," + base64.StdEncoding.EncodeToString(encodedData), nil
 }
 
-func evaluateGamePath(path string) (bool, string) {
+func resolveLocalGameVersion(gamePath string) (string, string) {
+	gamePath = strings.TrimSpace(gamePath)
+	if gamePath == "" {
+		return "", ""
+	}
+
+	dir, err := gameclient.ResolveDir(gamePath)
+	if err != nil {
+		return "", ""
+	}
+
+	version, err := gameclient.ReadVersion(dir)
+	if err != nil {
+		return dir, ""
+	}
+	return dir, strings.TrimSpace(version)
+}
+
+func versionFromReleaseInfo(info *bilihitoken.ReleaseInfo) string {
+	if info == nil {
+		return ""
+	}
+	return strings.TrimSpace(info.BHVer)
+}
+
+func pickLatestVersion(candidates ...string) string {
+	best := ""
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if best == "" || compareVersionStrings(candidate, best) > 0 {
+			best = candidate
+		}
+	}
+	return best
+}
+
+func compareVersionStrings(left, right string) int {
+	leftParts, leftOK := parseVersionParts(left)
+	rightParts, rightOK := parseVersionParts(right)
+
+	switch {
+	case leftOK && !rightOK:
+		return 1
+	case !leftOK && rightOK:
+		return -1
+	case !leftOK && !rightOK:
+		return 0
+	}
+
+	maxLen := len(leftParts)
+	if len(rightParts) > maxLen {
+		maxLen = len(rightParts)
+	}
+	for i := 0; i < maxLen; i++ {
+		leftValue := 0
+		if i < len(leftParts) {
+			leftValue = leftParts[i]
+		}
+		rightValue := 0
+		if i < len(rightParts) {
+			rightValue = rightParts[i]
+		}
+		switch {
+		case leftValue > rightValue:
+			return 1
+		case leftValue < rightValue:
+			return -1
+		}
+	}
+	return 0
+}
+
+func parseVersionParts(version string) ([]int, bool) {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return nil, false
+	}
+
+	match := versionStringPattern.FindString(version)
+	if match == "" {
+		return nil, false
+	}
+
+	rawParts := strings.Split(match, ".")
+	parts := make([]int, 0, len(rawParts))
+	for _, rawPart := range rawParts {
+		value, err := strconv.Atoi(rawPart)
+		if err != nil {
+			return nil, false
+		}
+		parts = append(parts, value)
+	}
+	return parts, len(parts) > 0
+}
+
+func describeVersionSync(remoteVersion, localVersion string) string {
+	remoteVersion = strings.TrimSpace(remoteVersion)
+	localVersion = strings.TrimSpace(localVersion)
+
+	switch {
+	case remoteVersion == "" && localVersion == "":
+		return "remote_bhver=unknown local_bhver=unknown version_check=unavailable"
+	case remoteVersion == "":
+		return fmt.Sprintf("remote_bhver=unknown local_bhver=%s version_check=remote_bhver_unavailable", localVersion)
+	case localVersion == "":
+		return fmt.Sprintf("remote_bhver=%s local_bhver=unknown version_check=local_bhver_unavailable", remoteVersion)
+	}
+
+	switch compareVersionStrings(remoteVersion, localVersion) {
+	case 1:
+		return fmt.Sprintf("remote_bhver=%s local_bhver=%s version_check=local_game_needs_update", remoteVersion, localVersion)
+	case -1:
+		return fmt.Sprintf("remote_bhver=%s local_bhver=%s version_check=remote_source_needs_update", remoteVersion, localVersion)
+	default:
+		return fmt.Sprintf("remote_bhver=%s local_bhver=%s version_check=in_sync", remoteVersion, localVersion)
+	}
+}
+
+func evaluateGamePath(path string) (bool, MessageRef) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return false, "未设置游戏目录，请浏览选择崩坏3安装目录。"
+		return false, newMessageRef("backend.hint.game_path_missing", nil)
 	}
 	if _, err := gameclient.ResolveDir(path); err != nil {
-		return false, "游戏目录无效，请重新浏览选择崩坏3安装目录。"
+		return false, newMessageRef("backend.hint.game_path_invalid", nil)
 	}
-	return true, ""
+	return true, MessageRef{}
 }

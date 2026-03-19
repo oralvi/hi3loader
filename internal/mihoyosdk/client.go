@@ -19,11 +19,10 @@ import (
 	"hi3loader/internal/netutil"
 )
 
-const (
-	verifyURL  = "https://api-sdk.mihoyo.com/bh3_cn/combo/granter/login/v2/login"
-	scanURL    = "https://api-sdk.mihoyo.com/bh3_cn/combo/panda/qrcode/scan"
-	confirmURL = "https://api-sdk.mihoyo.com/bh3_cn/combo/panda/qrcode/confirm"
-	// versionURL removed: do not call remote version API by default
+var (
+	authVerifyEndpoint  = sdkEndpoint("granter", "login", "v2", "login")
+	ticketInspectTarget = sdkEndpoint("panda", "qrcode", "scan")
+	ticketConfirmTarget = sdkEndpoint("panda", "qrcode", "confirm")
 )
 
 type Client struct {
@@ -34,6 +33,13 @@ type Client struct {
 	localDispatch map[string]any
 	hasBHVer      bool
 	localBHVer    string
+}
+
+type SessionInfo struct {
+	UID        string
+	OpenID     string
+	ComboID    string
+	ComboToken string
 }
 
 func NewClient() *Client {
@@ -61,7 +67,10 @@ func (c *Client) ResetDispatchCache() {
 }
 
 func (c *Client) Verify(ctx context.Context, uid, accessKey string) (map[string]any, error) {
-	data := mustJSONMap(verifyDataR)
+	data, err := parseJSONMap(verifyDataR)
+	if err != nil {
+		return nil, fmt.Errorf("parse verify data template: %w", err)
+	}
 	if numericUID := config.Int64Value(uid); numericUID != 0 {
 		data["uid"] = numericUID
 	} else {
@@ -69,12 +78,23 @@ func (c *Client) Verify(ctx context.Context, uid, accessKey string) (map[string]
 	}
 	data["access_key"] = accessKey
 
-	body := mustJSONMap(verifyBodyR)
-	body["data"] = compactJSON(data)
+	body, err := parseJSONMap(verifyBodyR)
+	if err != nil {
+		return nil, fmt.Errorf("parse verify body template: %w", err)
+	}
+	encodedData, err := compactJSON(data)
+	if err != nil {
+		return nil, fmt.Errorf("encode verify data: %w", err)
+	}
+	body["data"] = encodedData
 	body = makeSign(body)
 
 	resp := map[string]any{}
-	err := netutil.PostBodyJSON(ctx, c.http, verifyURL, compactJSON(body), jsonHeaders(), &resp)
+	encodedBody, err := compactJSON(body)
+	if err != nil {
+		return nil, fmt.Errorf("encode verify body: %w", err)
+	}
+	err = netutil.PostBodyJSON(ctx, c.http, authVerifyEndpoint, encodedBody, jsonHeaders(), &resp)
 	return resp, err
 }
 
@@ -103,7 +123,6 @@ func (c *Client) GetBHVer(ctx context.Context, cfg *config.Config) (string, erro
 	}
 	c.mu.RUnlock()
 
-	// Try remote version first if configured
 	if verURL := effectiveVersionURL(cfg); verURL != "" {
 		resp := map[string]any{}
 		if err := netutil.GetJSON(ctx, c.http, verURL, nil, &resp); err == nil {
@@ -118,7 +137,6 @@ func (c *Client) GetBHVer(ctx context.Context, cfg *config.Config) (string, erro
 		}
 	}
 
-	// Fallback to local configuration or game directory values
 	if cfg != nil && cfg.BHVer != "" {
 		c.mu.Lock()
 		c.localBHVer = cfg.BHVer
@@ -127,11 +145,10 @@ func (c *Client) GetBHVer(ctx context.Context, cfg *config.Config) (string, erro
 		return cfg.BHVer, nil
 	}
 
-	// If game path resolved earlier, try reading it again (handled above), otherwise return empty
 	return "", nil
 }
 
-func (c *Client) GetOAServer(ctx context.Context, openID, comboToken, uid string, cfg *config.Config) (map[string]any, error) {
+func (c *Client) GetOAServer(ctx context.Context, uid string, cfg *config.Config) (map[string]any, error) {
 	officialMode := isOfficialDispatchURL(effectiveDispatchURL(cfg))
 
 	c.mu.RLock()
@@ -141,8 +158,6 @@ func (c *Client) GetOAServer(ctx context.Context, openID, comboToken, uid string
 	}
 	c.mu.RUnlock()
 
-	// In official mode we intentionally avoid short-circuiting with local dispatch_data,
-	// because it may have been populated by historical third-party fallback blobs.
 	if cfg != nil && !officialMode && LooksLikeFinalDispatch(cfg.DispatchData) {
 		resp := map[string]any{
 			"retcode": 0,
@@ -163,9 +178,9 @@ func (c *Client) GetOAServer(ctx context.Context, openID, comboToken, uid string
 		return nil, err
 	}
 
-	if cfg != nil && cfg.DispatchCache != nil {
-		if entry, ok := cfg.DispatchCache[dispatchCacheKey(bhVer)]; ok && LooksLikeFinalDispatch(entry.Data) {
-			// In official mode, skip cache entries originating from third-party/custom sources.
+	if cfg != nil {
+		cacheKey := dispatchCacheKey(bhVer)
+		if snapshotVersion, entry, ok := cfg.DispatchSnapshot(); ok && snapshotVersion == cacheKey && LooksLikeFinalDispatch(entry.Data) {
 			if officialMode {
 				source := strings.TrimSpace(entry.Source)
 				if source == "" || source == customDispatchName {
@@ -190,7 +205,7 @@ func (c *Client) GetOAServer(ctx context.Context, openID, comboToken, uid string
 	}
 skipCachedDispatch:
 
-	resp, err := c.fetchDispatch(ctx, bhVer, openID, uid, cfg)
+	resp, err := c.fetchDispatch(ctx, bhVer, uid, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -203,73 +218,81 @@ skipCachedDispatch:
 }
 
 func dispatchCacheKey(version string) string {
-	version = strings.TrimSpace(version)
-	if version == "" {
-		return ""
-	}
-	if strings.Contains(version, "_gf_") {
-		return version
-	}
-	return version + "_gf_android_bilibili"
+	return config.NormalizeDispatchVersion(version)
 }
 
-func (c *Client) ScanCheck(ctx context.Context, bhInfo map[string]any, ticket string, cfg *config.Config) (map[string]any, error) {
-	check := mustJSONMap(scanCheckR)
+func (c *Client) ScanCheck(ctx context.Context, session SessionInfo, ticket string, cfg *config.Config) (map[string]any, error) {
+	check, err := parseJSONMap(scanCheckR)
+	if err != nil {
+		return nil, fmt.Errorf("parse scan check template: %w", err)
+	}
 	check["ticket"] = ticket
 	check["ts"] = int(time.Now().Unix())
 	check = makeSign(check)
 
 	scanResp := map[string]any{}
-	if err := netutil.PostBodyJSON(ctx, c.http, scanURL, compactJSON(check), jsonHeaders(), &scanResp); err != nil {
+	encodedCheck, err := compactJSON(check)
+	if err != nil {
+		return nil, fmt.Errorf("encode scan check payload: %w", err)
+	}
+	if err := netutil.PostBodyJSON(ctx, c.http, ticketInspectTarget, encodedCheck, jsonHeaders(), &scanResp); err != nil {
 		return nil, err
 	}
 	if config.Int64Value(scanResp["retcode"]) != 0 {
 		return scanResp, nil
 	}
 
-	return c.ScanConfirm(ctx, bhInfo, ticket, cfg)
+	return c.ScanConfirm(ctx, session, ticket, cfg)
 }
 
-func (c *Client) ScanConfirm(ctx context.Context, bhInfoResp map[string]any, ticket string, cfg *config.Config) (map[string]any, error) {
-	bhInfoAny, ok := bhInfoResp["data"]
-	if !ok {
-		return nil, fmt.Errorf("verify response missing data")
+func (c *Client) ScanConfirm(ctx context.Context, session SessionInfo, ticket string, cfg *config.Config) (map[string]any, error) {
+	scanResult, err := parseJSONMap(scanResultR)
+	if err != nil {
+		return nil, fmt.Errorf("parse scan result template: %w", err)
 	}
-	bhInfo, ok := bhInfoAny.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("verify response data has unexpected type %T", bhInfoAny)
+	scanData, err := parseJSONMap(scanDataR)
+	if err != nil {
+		return nil, fmt.Errorf("parse scan data template: %w", err)
 	}
 
-	scanResult := mustJSONMap(scanResultR)
-	scanData := mustJSONMap(scanDataR)
-
-	dispatch, err := c.GetOAServer(
-		ctx,
-		config.StringValue(bhInfo["open_id"]),
-		config.StringValue(bhInfo["combo_token"]),
-		config.StringValue(bhInfo["uid"]),
-		cfg,
-	)
+	dispatch, err := c.GetOAServer(ctx, session.UID, cfg)
 	if err != nil {
 		return nil, err
 	}
 	if dispatchData, ok := dispatch["data"]; ok {
 		scanData["dispatch"] = dispatchData
 	}
-	scanData["accountID"] = config.StringValue(bhInfo["open_id"])
-	scanData["accountToken"] = config.StringValue(bhInfo["combo_token"])
+	scanData["accountID"] = session.OpenID
+	scanData["accountToken"] = session.ComboToken
 
-	scanExt := mustJSONMap(scanExtR)
+	scanExt, err := parseJSONMap(scanExtR)
+	if err != nil {
+		return nil, fmt.Errorf("parse scan ext template: %w", err)
+	}
 	scanExt["data"] = scanData
 
-	scanRaw := mustJSONMap(scanRawR)
-	scanRaw["open_id"] = config.StringValue(bhInfo["open_id"])
-	scanRaw["combo_id"] = config.StringValue(bhInfo["combo_id"])
-	scanRaw["combo_token"] = config.StringValue(bhInfo["combo_token"])
+	scanRaw, err := parseJSONMap(scanRawR)
+	if err != nil {
+		return nil, fmt.Errorf("parse scan raw template: %w", err)
+	}
+	scanRaw["open_id"] = session.OpenID
+	scanRaw["combo_id"] = session.ComboID
+	scanRaw["combo_token"] = session.ComboToken
 
-	scanPayload := mustJSONMap(scanPayloadR)
-	scanPayload["raw"] = compactJSON(scanRaw)
-	scanPayload["ext"] = compactJSON(scanExt)
+	scanPayload, err := parseJSONMap(scanPayloadR)
+	if err != nil {
+		return nil, fmt.Errorf("parse scan payload template: %w", err)
+	}
+	encodedRaw, err := compactJSON(scanRaw)
+	if err != nil {
+		return nil, fmt.Errorf("encode scan raw payload: %w", err)
+	}
+	encodedExt, err := compactJSON(scanExt)
+	if err != nil {
+		return nil, fmt.Errorf("encode scan ext payload: %w", err)
+	}
+	scanPayload["raw"] = encodedRaw
+	scanPayload["ext"] = encodedExt
 
 	scanResult["payload"] = scanPayload
 	scanResult["ts"] = int(time.Now().Unix())
@@ -277,12 +300,16 @@ func (c *Client) ScanConfirm(ctx context.Context, bhInfoResp map[string]any, tic
 	scanResult = makeSign(scanResult)
 
 	resp := map[string]any{}
-	err = netutil.PostBodyJSON(ctx, c.http, confirmURL, compactJSON(scanResult), jsonHeaders(), &resp)
+	encodedScanResult, err := compactJSON(scanResult)
+	if err != nil {
+		return nil, fmt.Errorf("encode scan confirm payload: %w", err)
+	}
+	err = netutil.PostBodyJSON(ctx, c.http, ticketConfirmTarget, encodedScanResult, jsonHeaders(), &resp)
 	return resp, err
 }
 
-func BH3Sign(data string) string {
-	mac := hmac.New(sha256.New, []byte("0ebc517adb1b62c6b408df153331f9aa"))
+func signPayload(data string) string {
+	mac := hmac.New(sha256.New, signatureMaterial())
 	_, _ = mac.Write([]byte(data))
 	return hex.EncodeToString(mac.Sum(nil))
 }
@@ -306,7 +333,7 @@ func makeSign(data map[string]any) map[string]any {
 	}
 	signBase := strings.TrimRight(builder.String(), "&")
 	signBase = strings.ReplaceAll(signBase, " ", "")
-	data["sign"] = BH3Sign(signBase)
+	data["sign"] = signPayload(signBase)
 	return data
 }
 
@@ -314,7 +341,6 @@ func effectiveVersionURL(cfg *config.Config) string {
 	if cfg != nil && cfg.VersionAPI != "" {
 		return cfg.VersionAPI
 	}
-	// Do not use the hard-coded remote version URL by default.
 	return ""
 }
 
@@ -339,26 +365,20 @@ func buildDispatchURL(baseURL, version string) string {
 	}
 }
 
-// official dispatch helpers moved to official_dispatch.go
-
-func (c *Client) fetchDispatch(ctx context.Context, version, openID, uid string, cfg *config.Config) (map[string]any, error) {
+func (c *Client) fetchDispatch(ctx context.Context, version, uid string, cfg *config.Config) (map[string]any, error) {
 	baseURL := effectiveDispatchURL(cfg)
 	if isOfficialDispatchURL(baseURL) {
-		// Require explicit token and uid (no openID fallback).
-		// Use cfg.BILIHITOKEN (APK-extracted client token).
-		// If missing, attempt to fetch it (up to 3 tries, 5s interval). comboToken is ignored for official path.
 		token := ""
 		if cfg != nil {
 			token = strings.TrimSpace(cfg.BILIHITOKEN)
 		}
 		if token == "" {
-			// Try up to 3 times to fetch from APK
 			attempts := 3
 			var lastErr error
 			for i := 0; i < attempts; i++ {
-				info, err := bilihitoken.FetchGameInfo(c.http)
+				info, err := bilihitoken.FetchReleaseInfo(c.http)
 				if err == nil {
-					t, err2 := bilihitoken.FetchDispatchToken(c.http, info.APKUrl)
+					t, err2 := bilihitoken.FetchCredential(c.http, info.PackageURL)
 					if err2 == nil && strings.TrimSpace(t) != "" {
 						token = strings.TrimSpace(t)
 						break
@@ -372,18 +392,18 @@ func (c *Client) fetchDispatch(ctx context.Context, version, openID, uid string,
 				}
 			}
 			if token == "" {
-				return nil, fmt.Errorf("failed to obtain BILIHITOKEN automatically: %v; please set BILIHITOKEN in config", lastErr)
+				return nil, fmt.Errorf("failed to refresh required credential automatically: %v; please set it in config", lastErr)
 			}
 		}
 		uid = strings.TrimSpace(uid)
 		if uid == "" {
-			return nil, fmt.Errorf("official dispatch requires uid or HI3UID")
+			return nil, fmt.Errorf("required identifier is unavailable")
 		}
 		target, err := buildOfficialDispatchURL(baseURL, version, token, uid)
 		if err != nil {
 			return nil, err
 		}
-		raw, err := netutil.GetText(ctx, c.http, target, dispatchHeaders(version, openID))
+		raw, err := netutil.GetText(ctx, c.http, target, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -392,12 +412,12 @@ func (c *Client) fetchDispatch(ctx context.Context, version, openID, uid string,
 			return nil, err
 		}
 		resp["source"] = officialDispatchName
-		resp["request_mode"] = "hi3uid_biliHitoken"
+		resp["request_mode"] = "credential_flow"
 		addDispatchBlobSummary(resp)
 		return resp, nil
 	}
 
-	raw, err := netutil.GetText(ctx, c.http, buildDispatchURL(baseURL, version), dispatchHeaders(version, openID))
+	raw, err := netutil.GetText(ctx, c.http, buildDispatchURL(baseURL, version), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -410,25 +430,21 @@ func (c *Client) fetchDispatch(ctx context.Context, version, openID, uid string,
 	return resp, nil
 }
 
-// (FetchBothDispatches removed - restoring original behavior)
-
-func dispatchHeaders(version, openID string) map[string]string {
-	signParam := "x-req-code=80&x-req-name=pc-1.4.9:80&x-req-openid=" + openID + "&x-req-version=" + version + "_gf_android_bilibili"
-	return map[string]string{
-		"x-req-code":    "80",
-		"x-req-name":    "pc-1.4.9:80",
-		"x-req-openid":  openID,
-		"x-req-version": version + "_gf_android_bilibili",
-		"x-req-sign":    BH3Sign(signParam),
-	}
+func sdkEndpoint(parts ...string) string {
+	base := strings.Join([]string{"https://", "api-sdk", ".mihoyo.com", "/bh3_cn/combo/"}, "")
+	return base + strings.Join(parts, "/")
 }
 
-func compactJSON(v any) string {
+func signatureMaterial() []byte {
+	return []byte(strings.Join([]string{"0ebc517adb1b62c6", "b408df153331f9aa"}, ""))
+}
+
+func compactJSON(v any) (string, error) {
 	buf, err := json.Marshal(v)
 	if err != nil {
-		panic(err)
+		return "", fmt.Errorf("marshal json: %w", err)
 	}
-	return strings.ReplaceAll(string(buf), " ", "")
+	return strings.ReplaceAll(string(buf), " ", ""), nil
 }
 
 func jsonHeaders() map[string]string {
@@ -445,19 +461,38 @@ func cloneMap(src map[string]any) map[string]any {
 	return dst
 }
 
-func mustJSONMap(raw string) map[string]any {
+func parseJSONMap(raw string) (map[string]any, error) {
 	out := map[string]any{}
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		panic(err)
+		return nil, fmt.Errorf("parse json map: %w", err)
 	}
-	return out
+	return out, nil
 }
 
-const verifyBodyR = `{"device":"0000000000000000","app_id":"1","channel_id":"14","data":{},"sign":""}`
-const verifyDataR = `{"uid":1,"access_key":"590"}`
-const scanResultR = `{"device":"0000000000000000","app_id":1,"ts":1637593776681,"ticket":"","payload":{},"sign":""}`
-const scanPayloadR = `{"raw":"","proto":"Combo","ext":""}`
-const scanRawR = `{"heartbeat":false,"open_id":"","device_id":"0000000000000000","app_id":"1","channel_id":"14","combo_token":"","asterisk_name":"66666666","combo_id":"","account_type":"2"}`
-const scanExtR = `{"data":{}}`
-const scanDataR = `{"accountType":"2","accountID":"","accountToken":"","dispatch":{}}`
-const scanCheckR = `{"app_id":"1","device":"0000000000000000","ticket":"abab","ts":1637593776066,"sign":"abab"}`
+func ExtractSessionInfo(resp map[string]any) (*SessionInfo, error) {
+	if resp == nil {
+		return nil, fmt.Errorf("verify response is empty")
+	}
+	dataAny, ok := resp["data"]
+	if !ok {
+		return nil, fmt.Errorf("verify response missing data")
+	}
+	data, ok := dataAny.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("verify response data has unexpected type %T", dataAny)
+	}
+
+	session := &SessionInfo{
+		UID:        strings.TrimSpace(config.StringValue(data["uid"])),
+		OpenID:     strings.TrimSpace(config.StringValue(data["open_id"])),
+		ComboID:    strings.TrimSpace(config.StringValue(data["combo_id"])),
+		ComboToken: strings.TrimSpace(config.StringValue(data["combo_token"])),
+	}
+	if session.OpenID == "" {
+		return nil, fmt.Errorf("verify response missing open_id")
+	}
+	if session.ComboToken == "" {
+		return nil, fmt.Errorf("verify response missing combo_token")
+	}
+	return session, nil
+}

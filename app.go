@@ -47,6 +47,10 @@ func (a *App) State() service.State {
 	return a.svc.State()
 }
 
+func (a *App) LogSnapshot() []service.LogEntry {
+	return a.svc.LogSnapshot()
+}
+
 func (a *App) UpdateConfig(gamePath string, clipCheck, autoClose, autoClip, panelBlur bool) (service.State, error) {
 	return a.svc.UpdateConfig(strings.TrimSpace(gamePath), clipCheck, autoClose, autoClip, panelBlur)
 }
@@ -72,7 +76,7 @@ func (a *App) BrowseGamePath() (string, error) {
 		}
 	}
 	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
-		Title:                "选择崩坏3游戏目录",
+		Title:                "Select Honkai Impact 3 install directory",
 		DefaultDirectory:     defaultDir,
 		CanCreateDirectories: false,
 		ShowHiddenFiles:      false,
@@ -88,12 +92,12 @@ func (a *App) BrowseBackgroundImage() (string, error) {
 		}
 	}
 	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
-		Title:            "选择背景图片",
+		Title:            "Select background image",
 		DefaultDirectory: defaultDir,
 		Filters: []runtime.FileFilter{
 			{
 				DisplayName: "Image Files",
-				Pattern:     "*.png;*.jpg;*.jpeg;*.webp;*.bmp",
+				Pattern:     "*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.gif;*.tif;*.tiff",
 			},
 		},
 	})
@@ -111,11 +115,11 @@ func (a *App) OpenCaptcha() error {
 	return a.svc.OpenCaptchaURL()
 }
 
-func (a *App) ScanTicket(ticket string) (map[string]any, error) {
+func (a *App) ScanTicket(ticket string) (service.ScanResult, error) {
 	return a.svc.ScanTicket(context.Background(), strings.TrimSpace(ticket))
 }
 
-func (a *App) ScanURL(rawURL string) (map[string]any, error) {
+func (a *App) ScanURL(rawURL string) (service.ScanResult, error) {
 	return a.svc.ScanURL(context.Background(), strings.TrimSpace(rawURL))
 }
 
@@ -141,6 +145,14 @@ func (a *App) ManualFetchBiliHitoken() (service.State, error) {
 
 func (a *App) SaveSetting(key string, value any) (service.State, error) {
 	return a.svc.SaveSetting(key, value)
+}
+
+func (a *App) RecordClientMessage(message string) {
+	a.svc.RecordClientMessage(message)
+}
+
+func (a *App) LoadLocaleMessages() map[string]map[string]string {
+	return a.svc.LoadLocaleMessages()
 }
 
 func (a *App) ResetQuitFlag() service.State {

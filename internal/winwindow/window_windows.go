@@ -37,14 +37,6 @@ type Window struct {
 	ProcessName string
 }
 
-func Active() (*Window, error) {
-	hwnd := win.GetForegroundWindow()
-	if hwnd == 0 {
-		return nil, fmt.Errorf("no active window")
-	}
-	return describeWindow(hwnd)
-}
-
 func List() ([]Window, error) {
 	var items []Window
 	callback := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
@@ -108,6 +100,20 @@ func Capture(window *Window) (image.Image, error) {
 		return nil, fmt.Errorf("window bounds are invalid")
 	}
 	return captureWindow(window.Handle, width, height)
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func IsForeground(window *Window) bool {
+	if window == nil || window.Handle == 0 {
+		return false
+	}
+	return win.GetForegroundWindow() == window.Handle
 }
 
 func TitleMatches(actual, target string) bool {

@@ -5,6 +5,7 @@ Portable Wails desktop utility for local workflows.
 ## Overview
 
 - Small Wails GUI with a local-only workflow.
+- Window QR capture stays conservative: it detects common login-panel states and prompts manual action when QR login is not open or the QR has expired.
 
 ## Attribution
 
@@ -48,6 +49,7 @@ Notes:
 - Direct helper startup is intentionally blocked unless it is launched by the main program with a valid session token.
 - Script and non-GUI entrypoints still keep in-process fallback for local development workflows.
 - Fresh clones must build the frontend first because `main.go` embeds `frontend/dist`.
+- Development package names and title stamps use `dev+<random>+<yyMMddHHmmss>`.
 
 Frontend build prerequisite:
 
@@ -81,12 +83,14 @@ What the release script does:
 - auto-detects whether `private_impl` is available
 - builds with `-ldflags "-s -w"` to strip symbol/debug metadata
 - produces the packaged GUI binary in `build/bin`
+- adds a release title stamp in the form `r<yyMMddHHmmss>`
 
 Release behavior:
 
 - GUI release is helper-only
 - if helper startup or helper authorization fails, sensitive GUI actions fail closed instead of falling back to in-process direct calls
 - development scripts are not changed by this and may still use fallback logic
+- game-window QR handling favors stable detection and manual guidance over simulated clicks inside the Unity client
 
 ## Repository Notes
 

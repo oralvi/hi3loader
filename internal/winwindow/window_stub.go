@@ -15,10 +15,6 @@ type Window struct {
 	ProcessName string
 }
 
-func Active() (*Window, error) {
-	return nil, fmt.Errorf("active window capture is only supported on Windows")
-}
-
 func List() ([]Window, error) {
 	return nil, fmt.Errorf("window enumeration is only supported on Windows")
 }
@@ -29,6 +25,10 @@ func FindFirst(_ *regexp.Regexp, _ ...string) (*Window, error) {
 
 func Capture(_ *Window) (image.Image, error) {
 	return nil, fmt.Errorf("window capture is only supported on Windows")
+}
+
+func IsForeground(_ *Window) bool {
+	return false
 }
 
 func TitleMatches(actual, target string) bool {

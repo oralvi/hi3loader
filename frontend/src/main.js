@@ -320,6 +320,8 @@ let activeCaptchaURL = "";
 let captchaDismissed = false;
 let appBootstrapped = false;
 let latestConfigView = {};
+let latestState = null;
+let lastScanHintToastKey = "";
 const seenLogKeys = new Set();
 const autofillGuardNames = Object.freeze({
   account: "ctl_contact_ref",
@@ -327,6 +329,12 @@ const autofillGuardNames = Object.freeze({
   hi3uid: "ctl_release_ref",
   biliHitoken: "ctl_dispatch_ref",
 });
+const windowScanHintCodes = new Set([
+  "backend.hint.qr_expand_manual",
+  "backend.hint.qr_refresh_manual",
+  "backend.hint.qr_panel_unrecognized",
+  "backend.hint.qr_visible_but_unreadable",
+]);
 
 function installAutofillGuard(input, nameHint, { inputMode = "" } = {}) {
   if (!input) {
@@ -775,6 +783,7 @@ function syncCaptcha(state) {
 }
 
 function renderState(state) {
+  latestState = state || null;
   const cfg = state.config || {};
   latestConfigView = cfg;
   const clipCheck = Boolean(cfg.clip_check ?? cfg.clipCheck);
@@ -813,6 +822,18 @@ function renderState(state) {
   elements.errorValue.textContent = formatErrorValue(state.lastError, state.lastErrorMessage);
   elements.pathHintValue.hidden = !pathHintText;
   elements.pathHintValue.textContent = pathHintText;
+
+  const hintCode = String(state?.lastErrorMessage?.code ?? "").trim();
+  if (windowScanHintCodes.has(hintCode)) {
+    const hintText = translateMessage(state.lastErrorMessage, state.lastError || "");
+    const toastKey = `${hintCode}|${hintText}`;
+    if (hintText && toastKey !== lastScanHintToastKey) {
+      lastScanHintToastKey = toastKey;
+      showPayload(hintText, "warn");
+    }
+  } else {
+    lastScanHintToastKey = "";
+  }
 
   syncInputValue(elements.accountInput, cfg.account);
   syncSecretInput("password", cfg);
@@ -1090,7 +1111,29 @@ elements.scanClipboardBtn.addEventListener("click", async () => {
 });
 
 elements.scanWindowBtn.addEventListener("click", async () => {
-  await runTask(() => ScanWindow(), (matched) => ({ matched }), "soft");
+  const result = await runTask(() => ScanWindow(), null, "soft");
+  if (result === null) {
+    return;
+  }
+  if (result?.matched) {
+    showPayload({ matched: true }, "soft");
+    return;
+  }
+
+  const hint = translateMessage(result?.messageRef, result?.message || "");
+  if (hint) {
+    showPayload(hint, "warn");
+    return;
+  }
+  const stateHintCode = String(latestState?.lastErrorMessage?.code ?? "").trim();
+  if (windowScanHintCodes.has(stateHintCode)) {
+    const stateHint = translateMessage(latestState.lastErrorMessage, latestState.lastError || "");
+    if (stateHint) {
+      showPayload(stateHint, "warn");
+      return;
+    }
+  }
+  showPayload(t("action.scanWindowNoMatch"), "warn");
 });
 
 elements.captchaCloseBtn.addEventListener("click", () => {

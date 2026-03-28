@@ -1,9 +1,9 @@
 $ErrorActionPreference = "Stop"
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$baseVersion = "1.1.0"
+$baseVersion = "1.1.1"
 $buildTime = Get-Date
-$buildStamp = $buildTime.ToString("yyMMddHHmm")
+$buildStamp = $buildTime.ToString("yyMMddHHmmss")
 $displayTime = $buildTime.ToString("yyyy-MM-dd HH:mm:ss zzz")
 $titleStamp = "r$buildStamp"
 $outputName = "HI3 Loader $baseVersion"

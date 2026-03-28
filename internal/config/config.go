@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -200,6 +201,84 @@ func StringValue(v any) string {
 	}
 }
 
+func BoolValue(v any) bool {
+	switch x := v.(type) {
+	case bool:
+		return x
+	case float64:
+		return x != 0
+	case int:
+		return x != 0
+	case int64:
+		return x != 0
+	case json.Number:
+		if n, err := x.Int64(); err == nil {
+			return n != 0
+		}
+		if f, err := x.Float64(); err == nil {
+			return f != 0
+		}
+		return false
+	case string:
+		s := strings.TrimSpace(strings.ToLower(x))
+		switch s {
+		case "1", "true", "yes", "y", "on":
+			return true
+		case "0", "false", "no", "n", "off", "":
+			return false
+		default:
+			return false
+		}
+	default:
+		return false
+	}
+}
+
+func IntValue(v any) int {
+	switch x := v.(type) {
+	case int:
+		return x
+	case int64:
+		return int(x)
+	case float64:
+		return int(x)
+	case json.Number:
+		if n, err := x.Int64(); err == nil {
+			return int(n)
+		}
+		if f, err := x.Float64(); err == nil {
+			return int(f)
+		}
+		return 0
+	case string:
+		n, _ := strconv.Atoi(strings.TrimSpace(x))
+		return n
+	default:
+		return 0
+	}
+}
+
+func Float64Value(v any) float64 {
+	switch x := v.(type) {
+	case float64:
+		return x
+	case float32:
+		return float64(x)
+	case int:
+		return float64(x)
+	case int64:
+		return float64(x)
+	case json.Number:
+		f, _ := x.Float64()
+		return f
+	case string:
+		f, _ := strconv.ParseFloat(strings.TrimSpace(x), 64)
+		return f
+	default:
+		return 0
+	}
+}
+
 func normalizeString(s string) string {
 	switch strings.TrimSpace(s) {
 	case "", "<nil>", "null", "<nil/>":
@@ -387,6 +466,7 @@ func Int64Value(v any) int64 {
 }
 
 func needsUpgrade(raw []byte) bool {
+	raw = stripUTF8BOM(raw)
 	keys := map[string]json.RawMessage{}
 	if err := json.Unmarshal(raw, &keys); err != nil {
 		return true
@@ -401,6 +481,28 @@ func needsUpgrade(raw []byte) bool {
 		if _, ok := keys[key]; !ok {
 			return true
 		}
+	}
+	for _, key := range []string{
+		"dispatch_cache",
+		"ver",
+		"auto_expand_qrcode",
+		"auto_refresh_expired_qr",
+	} {
+		if _, ok := keys[key]; ok {
+			return true
+		}
+	}
+	for key, kind := range canonicalFieldKinds {
+		rawValue, ok := keys[key]
+		if !ok || isNullJSON(rawValue) {
+			continue
+		}
+		if jsonValueKindOf(rawValue) != kind {
+			return true
+		}
+	}
+	if bytes.HasPrefix(raw, utf8BOM) {
+		return true
 	}
 	return false
 }

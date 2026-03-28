@@ -1,9 +1,9 @@
 $ErrorActionPreference = "Stop"
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$baseVersion = "1.1.0"
+$baseVersion = "1.1.1"
 $buildTime = Get-Date
-$buildDate = $buildTime.ToString("yyMMddHHmm")
+$buildDate = $buildTime.ToString("yyMMddHHmmss")
 $bytes = New-Object byte[] 4
 $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
 $rng.GetBytes($bytes)

@@ -19,7 +19,7 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
-var appVersion = "1.1.0"
+var appVersion = "1.1.1"
 var buildStamp = ""
 var runtimeDevStamp = ""
 
@@ -28,7 +28,7 @@ func effectiveBuildStamp() string {
 		return buildStamp
 	}
 	if runtimeDevStamp == "" {
-		runtimeDevStamp = "dev+" + randomMask(4) + "+" + time.Now().Format("0601021504")
+		runtimeDevStamp = "dev+" + randomMask(4) + "+" + time.Now().Format("060102150405")
 	}
 	return runtimeDevStamp
 }

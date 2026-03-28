@@ -119,8 +119,8 @@ func (a *App) ScanClipboard() (bool, error) {
 	return a.svc.ScanClipboardOnce(context.Background())
 }
 
-func (a *App) ScanWindow() (bool, error) {
-	return a.svc.ScanWindowOnce(context.Background())
+func (a *App) ScanWindow() (service.ScanWindowResult, error) {
+	return a.svc.ScanWindow(context.Background())
 }
 
 func (a *App) ManualRefreshDispatch(hi3uid, biliHitoken string) (service.State, error) {

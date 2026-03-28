@@ -83,6 +83,14 @@ func fallbackMessageText(ref MessageRef) string {
 		return "No game directory is configured yet. Launch Game stays disabled until you set one."
 	case "backend.hint.game_path_invalid":
 		return "The current game directory is invalid. Select a valid path before launching the game."
+	case "backend.hint.qr_expand_manual":
+		return "QR login is not open in the game window. Please switch to QR login manually."
+	case "backend.hint.qr_refresh_manual":
+		return "The QR code has expired. Please click Refresh in the game window."
+	case "backend.hint.qr_panel_unrecognized":
+		return "Login panel was not recognized in the captured game window. Open the login window and try again."
+	case "backend.hint.qr_visible_but_unreadable":
+		return "A QR area is visible, but no usable QR code was decoded. Make sure the QR is clear and retry."
 	case "backend.error.credentials_required":
 		return "Account and password are required."
 	case "backend.error.captcha_url_empty":

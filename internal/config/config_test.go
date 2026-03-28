@@ -156,3 +156,120 @@ func TestLegacyPlaintextConfigMigratesToEncryptedStorage(t *testing.T) {
 		t.Fatalf("legacy dispatch_cache should not be persisted after migration")
 	}
 }
+
+func TestLoadLooseTypedConfigRewritesCanonicalFormat(t *testing.T) {
+	t.Setenv(storageSecretEnvVar, t.TempDir())
+	t.Setenv(machineIDEnvVar, "test-machine-id")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	loose := "\ufeff{\n" +
+		`  "account": 123456,` + "\n" +
+		`  "sleep_time": "5",` + "\n" +
+		`  "clip_check": "true",` + "\n" +
+		`  "auto_close": "1",` + "\n" +
+		`  "uid": "42",` + "\n" +
+		`  "last_login_succ": "true",` + "\n" +
+		`  "auto_clip": "false",` + "\n" +
+		`  "account_login": "true",` + "\n" +
+		`  "background_opacity": "0.55",` + "\n" +
+		`  "panel_blur": "false",` + "\n" +
+		`  "bh_ver": 8.7,` + "\n" +
+		`  "auto_expand_qrcode": true,` + "\n" +
+		`  "auto_refresh_expired_qr": true,` + "\n" +
+		`  "ver": 5` + "\n" +
+		`}`
+	if err := os.WriteFile(path, []byte(loose), 0o600); err != nil {
+		t.Fatalf("write loose config: %v", err)
+	}
+
+	cfg, err := LoadOrCreate(path)
+	if err != nil {
+		t.Fatalf("load loose config: %v", err)
+	}
+
+	if cfg.Account != "123456" {
+		t.Fatalf("unexpected account: %q", cfg.Account)
+	}
+	if cfg.SleepTime != 5 {
+		t.Fatalf("unexpected sleep time: %d", cfg.SleepTime)
+	}
+	if !cfg.ClipCheck || !cfg.AutoClose || cfg.AutoClip {
+		t.Fatalf("unexpected boolean coercion: clip=%v close=%v autoClip=%v", cfg.ClipCheck, cfg.AutoClose, cfg.AutoClip)
+	}
+	if cfg.UID != 42 {
+		t.Fatalf("unexpected uid: %d", cfg.UID)
+	}
+	if cfg.BackgroundOpacity != 0.55 {
+		t.Fatalf("unexpected background opacity: %v", cfg.BackgroundOpacity)
+	}
+	if cfg.PanelBlur {
+		t.Fatalf("expected panel blur false after coercion")
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read rewritten config: %v", err)
+	}
+	text := string(raw)
+	for _, key := range []string{"auto_expand_qrcode", "auto_refresh_expired_qr", "\"ver\""} {
+		if strings.Contains(text, key) {
+			t.Fatalf("deprecated key %q should not remain after rewrite", key)
+		}
+	}
+	if !strings.Contains(text, "\"sleep_time\": 5") {
+		t.Fatalf("expected canonical numeric sleep_time in rewritten config")
+	}
+	if !strings.Contains(text, "\"clip_check\": true") {
+		t.Fatalf("expected canonical boolean clip_check in rewritten config")
+	}
+	if strings.Contains(text, "\"clip_check\": \"true\"") {
+		t.Fatalf("stringified clip_check should have been normalized")
+	}
+	if strings.HasPrefix(text, "\ufeff") {
+		t.Fatalf("utf-8 BOM should have been removed during rewrite")
+	}
+}
+
+func TestLoadConfigDropsLegacyDispatchCacheAfterRewrite(t *testing.T) {
+	t.Setenv(storageSecretEnvVar, t.TempDir())
+	t.Setenv(machineIDEnvVar, "test-machine-id")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	legacy := `{
+  "account": "tester",
+  "dispatch_data": "legacy-dispatch",
+  "dispatch_cache": {
+    "8.7.0_gf_android_bilibili": {
+      "data": "legacy-dispatch",
+      "source": "legacy_cache",
+      "saved_at": "2026-03-19T10:00:00Z"
+    }
+  },
+  "auto_expand_qrcode": true
+}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatalf("write legacy config: %v", err)
+	}
+
+	cfg, err := LoadOrCreate(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.DispatchVersion != "8.7.0_gf_android_bilibili" {
+		t.Fatalf("expected migrated dispatch version, got %q", cfg.DispatchVersion)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read rewritten config: %v", err)
+	}
+	text := string(raw)
+	if strings.Contains(text, "\"dispatch_cache\"") {
+		t.Fatalf("legacy dispatch_cache should not remain after rewrite")
+	}
+	if strings.Contains(text, "auto_expand_qrcode") {
+		t.Fatalf("deprecated experimental key should not remain after rewrite")
+	}
+}

@@ -50,6 +50,8 @@ const (
 	pendingCredentialTTL      = 10 * time.Minute
 	defaultSleepTime          = 3
 	blockedSleepTime          = 8
+	manualWindowScanAttempts  = 1
+	manualWindowScanDelay     = 250 * time.Millisecond
 	windowMissBackoffSeconds  = 6
 	windowMissMaxSeconds      = 10
 	windowStaticSkipThreshold = 2
@@ -125,6 +127,12 @@ type ScanResult struct {
 	QuitRequested bool              `json:"quitRequested,omitempty"`
 }
 
+type ScanWindowResult struct {
+	Matched    bool       `json:"matched"`
+	Message    string     `json:"message,omitempty"`
+	MessageRef MessageRef `json:"messageRef"`
+}
+
 type Hooks struct {
 	OnLog   func(LogEntry)
 	OnState func(State)
@@ -144,12 +152,15 @@ type Service struct {
 	serverStarted      bool
 	running            bool
 	loopCancel         context.CancelFunc
+	monitorWake        chan struct{}
 	captchaURL         string
 	captchaPending     bool
 	dispatchSource     string
 	lastAction         string
 	lastError          string
 	lastErrorMessage   MessageRef
+	lastNoticeCode     string
+	lastNoticeAt       time.Time
 	lastTicket         string
 	lastQRCodeURL      string
 	quitRequested      bool
@@ -218,6 +229,7 @@ func NewWithOptions(cfgPath string, opts Options) (*Service, error) {
 		mihoyo:        mihoyosdk.NewClient(),
 		bridge:        bridgeClient,
 		fileLog:       fileLog,
+		monitorWake:   make(chan struct{}, 1),
 		recentTickets: map[string]time.Time{},
 	}
 	s.server = captcha.NewServer("127.0.0.1:0", s.handleCaptchaResult)
@@ -394,6 +406,9 @@ func (s *Service) UpdateConfig(gamePath string, clipCheck, autoClose, autoClip, 
 	}
 	_, _ = s.syncVersionAndDispatch(context.Background(), false)
 	s.emitState()
+	if autoClip || clipCheck {
+		s.wakeMonitorLoop()
+	}
 	return s.State(), nil
 }
 
@@ -431,6 +446,10 @@ func (s *Service) SaveSetting(key string, value any) (State, error) {
 	}
 
 	s.emitState()
+	switch key {
+	case "auto_clip", "clip_check", "game_path":
+		s.wakeMonitorLoop()
+	}
 	return s.State(), nil
 }
 
@@ -497,7 +516,7 @@ func settingAuditValue(cfg *config.Config, key string) string {
 
 	switch key {
 	case "account":
-		return cfg.Account
+		return maskSecret(cfg.Account)
 	case "password":
 		return "<redacted>"
 	case "HI3UID":
@@ -841,8 +860,28 @@ func (s *Service) ScanClipboardOnce(ctx context.Context) (bool, error) {
 	return s.scanClipboardOnce(ctx, false)
 }
 
+func (s *Service) ScanWindow(ctx context.Context) (ScanWindowResult, error) {
+	for attempt := 0; attempt < manualWindowScanAttempts; attempt++ {
+		matched, hint, err := s.scanWindowOnce(ctx, false)
+		if err != nil {
+			return ScanWindowResult{}, err
+		}
+		if matched {
+			return ScanWindowResult{Matched: true}, nil
+		}
+		if hint.Code != "" {
+			return newScanWindowResult(false, hint), nil
+		}
+		if attempt+1 < manualWindowScanAttempts {
+			time.Sleep(manualWindowScanDelay)
+		}
+	}
+	return ScanWindowResult{Matched: false}, nil
+}
+
 func (s *Service) ScanWindowOnce(ctx context.Context) (bool, error) {
-	return s.scanWindowOnce(ctx, false)
+	matched, _, err := s.scanWindowOnce(ctx, false)
+	return matched, err
 }
 
 func (s *Service) monitorLoop(ctx context.Context) {
@@ -855,7 +894,7 @@ func (s *Service) monitorLoop(ctx context.Context) {
 
 		cfg := s.Config()
 		if cfg.AutoClip {
-			if _, err := s.scanWindowOnce(ctx, true); err != nil {
+			if _, _, err := s.scanWindowOnce(ctx, true); err != nil {
 				s.logf("window capture failed: %v", err)
 			}
 		}
@@ -871,32 +910,40 @@ func (s *Service) monitorLoop(ctx context.Context) {
 		case <-ctx.Done():
 			timer.Stop()
 			return
+		case <-s.monitorWake:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
 		case <-timer.C:
 		}
 	}
 }
 
+func (s *Service) wakeMonitorLoop() {
+	s.mu.RLock()
+	running := s.running
+	s.mu.RUnlock()
+	if !running {
+		return
+	}
+	select {
+	case s.monitorWake <- struct{}{}:
+	default:
+	}
+}
+
 func (s *Service) monitorSleepTime() int {
 	s.mu.RLock()
-	lastError := strings.ToLower(strings.TrimSpace(s.lastError))
-	autoClip := s.cfg.AutoClip
-	windowMissStreak := s.windowMissStreak
+	sleepTime := s.cfg.SleepTime
 	s.mu.RUnlock()
 
-	if looksLikeAccessBlock(lastError) {
-		return blockedSleepTime
+	if sleepTime <= 0 {
+		return defaultSleepTime
 	}
-	if autoClip {
-		switch {
-		case windowMissStreak >= 8:
-			return windowMissMaxSeconds
-		case windowMissStreak >= 4:
-			return 8
-		case windowMissStreak >= 2:
-			return windowMissBackoffSeconds
-		}
-	}
-	return defaultSleepTime
+	return sleepTime
 }
 
 func looksLikeAccessBlock(message string) bool {
@@ -1124,9 +1171,9 @@ func (s *Service) scanClipboardOnce(ctx context.Context, silent bool) (bool, err
 	return s.consumeTicket(ctx, ticket, rawURL, true)
 }
 
-func (s *Service) scanWindowOnce(ctx context.Context, silent bool) (bool, error) {
+func (s *Service) scanWindowOnce(ctx context.Context, silent bool) (bool, MessageRef, error) {
 	if err := s.prepareScanSession(ctx, silent); err != nil {
-		return false, err
+		return false, MessageRef{}, err
 	}
 
 	window, err := winwindow.FindFirst(targetWindowPattern, targetProcessNames...)
@@ -1139,40 +1186,70 @@ func (s *Service) scanWindowOnce(ctx context.Context, silent bool) (bool, error)
 			if !silent {
 				s.emitState()
 			}
-			return false, nil
+			return false, MessageRef{}, nil
 		}
-		return false, err
+		return false, MessageRef{}, err
 	}
 	if window.Bounds.Empty() || window.Bounds.Dx() <= 0 || window.Bounds.Dy() <= 0 {
-		return false, fmt.Errorf("target window bounds are invalid")
+		return false, MessageRef{}, fmt.Errorf("target window bounds are invalid")
 	}
 
 	img, err := winwindow.Capture(window)
 	if err != nil {
-		return false, err
+		return false, MessageRef{}, err
 	}
-	if s.shouldSkipWindowDecode(windowImageFingerprint(img), silent) {
-		return false, nil
+	fingerprint := windowImageFingerprint(img)
+	if s.shouldSkipWindowDecode(fingerprint, silent) {
+		hint, expandErr := s.tryExpandWindowQRCode(img)
+		if expandErr != nil {
+			s.logf("window QR expand attempt failed: %v", expandErr)
+		}
+		return false, hint, nil
 	}
 
-	ok, consumeErr := s.consumeImage(ctx, img, false)
-	if consumeErr != nil {
-		return false, nil
+	ok, scanResult, consumeErr := s.consumeImageResult(ctx, img, false)
+	if consumeErr == nil {
+		if isExpiredScanResult(scanResult) {
+			s.logf("scan reported expired QR; manual refresh is required")
+			hint, hintErr := s.tryRefreshExpiredWindowQRCode(window, img)
+			if hintErr != nil {
+				s.logf("window QR state analysis failed: %v", hintErr)
+			}
+			return false, hint, nil
+		}
+		return ok, MessageRef{}, nil
 	}
-	return ok, nil
+	hint, expandErr := s.tryExpandWindowQRCode(img)
+	if expandErr != nil {
+		s.logf("window QR state analysis failed after decode error: %v", expandErr)
+	}
+	if hint.Code != "" {
+		return false, hint, nil
+	}
+	return false, MessageRef{}, nil
 }
 
 func (s *Service) consumeImage(ctx context.Context, img image.Image, clearClipboard bool) (bool, error) {
+	ok, _, err := s.consumeImageResult(ctx, img, clearClipboard)
+	return ok, err
+}
+
+func (s *Service) consumeImageResult(ctx context.Context, img image.Image, clearClipboard bool) (bool, ScanResult, error) {
 	ticket, rawURL, err := qr.DecodeTicketFromImage(img)
 	if err != nil {
-		return false, err
+		return false, ScanResult{}, err
 	}
-	return s.consumeTicket(ctx, ticket, rawURL, clearClipboard)
+	return s.consumeTicketResult(ctx, ticket, rawURL, clearClipboard)
 }
 
 func (s *Service) consumeTicket(ctx context.Context, ticket, rawURL string, clearClipboard bool) (bool, error) {
+	ok, _, err := s.consumeTicketResult(ctx, ticket, rawURL, clearClipboard)
+	return ok, err
+}
+
+func (s *Service) consumeTicketResult(ctx context.Context, ticket, rawURL string, clearClipboard bool) (bool, ScanResult, error) {
 	if !s.rememberTicket(ticket) {
-		return false, nil
+		return false, ScanResult{}, nil
 	}
 
 	s.mu.Lock()
@@ -1183,8 +1260,9 @@ func (s *Service) consumeTicket(ctx context.Context, ticket, rawURL string, clea
 	s.lastErrorMessage = MessageRef{}
 	s.mu.Unlock()
 
-	if _, err := s.ScanTicket(ctx, ticket); err != nil {
-		return false, err
+	scanResult, err := s.ScanTicket(ctx, ticket)
+	if err != nil {
+		return false, scanResult, err
 	}
 
 	if clearClipboard {
@@ -1193,7 +1271,7 @@ func (s *Service) consumeTicket(ctx context.Context, ticket, rawURL string, clea
 	}
 
 	s.emitState()
-	return true, nil
+	return scanResult.OK, scanResult, nil
 }
 
 func (s *Service) rememberTicket(ticket string) bool {
@@ -1642,6 +1720,47 @@ func (s *Service) setError(err error) {
 	s.emitState()
 }
 
+func (s *Service) setHint(ref MessageRef, logText string) {
+	if ref.Code == "" {
+		return
+	}
+
+	text := strings.TrimSpace(translateMessageRef(ref))
+	if text == "" {
+		text = strings.TrimSpace(logText)
+	}
+	if text == "" {
+		return
+	}
+
+	now := time.Now()
+	s.mu.Lock()
+	if s.lastNoticeCode == ref.Code && now.Sub(s.lastNoticeAt) < 4*time.Second {
+		s.mu.Unlock()
+		return
+	}
+	s.lastError = text
+	s.lastErrorMessage = cloneMessageRef(ref)
+	s.lastNoticeCode = ref.Code
+	s.lastNoticeAt = now
+	s.mu.Unlock()
+
+	if s.fileLog != nil {
+		s.fileLog.Writef("hint: %s", s.sanitizeMessage(text))
+	}
+	s.emitState()
+}
+
+func translateMessageRef(ref MessageRef) string {
+	if ref.Code == "" {
+		return ""
+	}
+	if text := fallbackMessageText(ref); text != "" {
+		return text
+	}
+	return ""
+}
+
 func summarizeScanResult(resp map[string]any) ScanResult {
 	retcode := config.Int64Value(resp["retcode"])
 	result := ScanResult{
@@ -1654,6 +1773,23 @@ func summarizeScanResult(resp map[string]any) ScanResult {
 		result.Message = "Scan confirmation did not complete."
 	}
 	return result
+}
+
+func newScanWindowResult(matched bool, ref MessageRef) ScanWindowResult {
+	result := ScanWindowResult{Matched: matched}
+	if ref.Code == "" {
+		return result
+	}
+	result.MessageRef = cloneMessageRef(ref)
+	result.Message = strings.TrimSpace(translateMessageRef(ref))
+	if result.Message == "" {
+		result.Message = fallbackMessageText(ref)
+	}
+	return result
+}
+
+func isExpiredScanResult(result ScanResult) bool {
+	return result.Retcode == -106
 }
 
 func (s *Service) logf(format string, args ...any) {

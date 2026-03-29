@@ -1,7 +1,6 @@
 package service
 
 import (
-	"errors"
 	"image"
 	"image/color"
 	_ "image/jpeg"
@@ -78,18 +77,6 @@ func TestDetectRefreshButtonPoint(t *testing.T) {
 	}
 	if !point.In(refreshArea) {
 		t.Fatalf("detected refresh point %v should land inside %v", point, refreshArea)
-	}
-}
-
-func TestShouldAttemptWindowQRExpand(t *testing.T) {
-	if shouldAttemptWindowQRExpand(nil) {
-		t.Fatalf("nil error should not trigger expand attempt")
-	}
-	if shouldAttemptWindowQRExpand(errors.New("decode qr code: ticket not found in decoded qr contents")) {
-		t.Fatalf("non-empty qr decode should not trigger expand attempt")
-	}
-	if !shouldAttemptWindowQRExpand(errors.New("decode qr code: no qr code found")) {
-		t.Fatalf("missing qr should trigger expand attempt")
 	}
 }
 

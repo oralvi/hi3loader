@@ -47,8 +47,8 @@ func (a *App) LogSnapshot() []service.LogEntry {
 	return a.svc.LogSnapshot()
 }
 
-func (a *App) UpdateConfig(gamePath string, clipCheck, autoClose, autoClip, panelBlur bool) (service.State, error) {
-	return a.svc.UpdateConfig(strings.TrimSpace(gamePath), clipCheck, autoClose, autoClip, panelBlur)
+func (a *App) SaveFeatureSettings(gamePath string, clipCheck, autoClose, autoClip, panelBlur bool, opacity float64) (service.State, error) {
+	return a.svc.SaveFeatureSettings(strings.TrimSpace(gamePath), clipCheck, autoClose, autoClip, panelBlur, opacity)
 }
 
 func (a *App) UpdateBackground(backgroundPath string, opacity float64) (service.State, error) {
@@ -57,6 +57,18 @@ func (a *App) UpdateBackground(backgroundPath string, opacity float64) (service.
 
 func (a *App) Login(account, password string) (service.LoginResult, error) {
 	return a.svc.Login(context.Background(), strings.TrimSpace(account), password, false)
+}
+
+func (a *App) SelectSavedAccount(account string) (service.State, error) {
+	return a.svc.SelectSavedAccount(strings.TrimSpace(account))
+}
+
+func (a *App) PauseMonitor() {
+	a.svc.PauseMonitor()
+}
+
+func (a *App) ResumeMonitor() {
+	a.svc.ResumeMonitor()
 }
 
 func (a *App) LaunchGame() error {
@@ -135,8 +147,14 @@ func (a *App) ManualFetchBiliHitoken() (service.State, error) {
 	return a.svc.ManualFetchBiliHitoken(context.Background())
 }
 
-func (a *App) SaveSetting(key string, value any) (service.State, error) {
-	return a.svc.SaveSetting(key, value)
+func (a *App) SaveCredentialSettings(hi3uid string, updateHI3UID bool, biliHitoken string, updateBiliHitoken bool, asteriskName string) (service.State, error) {
+	return a.svc.SaveCredentialSettings(
+		strings.TrimSpace(hi3uid),
+		updateHI3UID,
+		strings.TrimSpace(biliHitoken),
+		updateBiliHitoken,
+		strings.TrimSpace(asteriskName),
+	)
 }
 
 func (a *App) RecordClientMessage(message string) {

@@ -103,6 +103,7 @@ type ConfigSnapshot struct {
 	GamePath              string `json:"gamePath,omitempty"`
 	BHVer                 string `json:"bhVer,omitempty"`
 	BiliPkgVer            int    `json:"biliPkgVer,omitempty"`
+	AsteriskName          string `json:"asteriskName,omitempty"`
 	VersionAPI            string `json:"versionApi,omitempty"`
 	DispatchAPI           string `json:"dispatchApi,omitempty"`
 	DispatchData          string `json:"dispatchData,omitempty"`
@@ -121,6 +122,7 @@ func (s ConfigSnapshot) ToConfig() *config.Config {
 	cfg.GamePath = s.GamePath
 	cfg.BHVer = s.BHVer
 	cfg.BiliPkgVer = s.BiliPkgVer
+	cfg.AsteriskName = s.AsteriskName
 	cfg.VersionAPI = s.VersionAPI
 	cfg.DispatchAPI = s.DispatchAPI
 	cfg.DispatchData = s.DispatchData

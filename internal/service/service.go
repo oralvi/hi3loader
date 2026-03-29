@@ -49,15 +49,12 @@ const (
 	ticketTTL                 = 30 * time.Second
 	pendingCredentialTTL      = 10 * time.Minute
 	defaultSleepTime          = 3
-	blockedSleepTime          = 8
-	manualWindowScanAttempts  = 1
-	manualWindowScanDelay     = 250 * time.Millisecond
-	windowMissBackoffSeconds  = 6
-	windowMissMaxSeconds      = 10
 	windowStaticSkipThreshold = 2
 	windowStaticDecodePeriod  = 3
 	managedBackgroundBaseName = "custom_background"
 	managedBackgroundExt      = ".webp"
+	hintStateInterval         = 6 * time.Second
+	hintLogInterval           = 12 * time.Second
 )
 
 var (
@@ -161,6 +158,7 @@ type Service struct {
 	lastErrorMessage   MessageRef
 	lastNoticeCode     string
 	lastNoticeAt       time.Time
+	lastNoticeLogAt    time.Time
 	lastTicket         string
 	lastQRCodeURL      string
 	quitRequested      bool
@@ -174,6 +172,7 @@ type Service struct {
 	windowMissStreak   int
 	windowStaticStreak int
 	windowFingerprint  string
+	monitorPauseDepth  int
 	hooks              Hooks
 	fileLog            *debuglog.Logger
 	loginMu            sync.Mutex
@@ -378,7 +377,7 @@ func (s *Service) Config() *config.Config {
 	return s.cfg.Clone()
 }
 
-func (s *Service) UpdateConfig(gamePath string, clipCheck, autoClose, autoClip, panelBlur bool) (State, error) {
+func (s *Service) SaveFeatureSettings(gamePath string, clipCheck, autoClose, autoClip, panelBlur bool, opacity float64) (State, error) {
 	resolvedGamePath := ""
 	if strings.TrimSpace(gamePath) != "" {
 		dir, err := gameclient.ResolveDir(gamePath)
@@ -387,69 +386,71 @@ func (s *Service) UpdateConfig(gamePath string, clipCheck, autoClose, autoClip, 
 		}
 		resolvedGamePath = dir
 	}
-
-	s.mu.Lock()
-	s.cfg.GamePath = resolvedGamePath
-	s.cfg.ClipCheck = clipCheck
-	s.cfg.AutoClose = autoClose
-	s.cfg.AutoClip = autoClip
-	s.cfg.PanelBlur = panelBlur
-	s.cfg.SleepTime = defaultSleepTime
-	err := config.Save(s.cfgPath, s.cfg)
-	s.mu.Unlock()
-	if err != nil {
-		return State{}, err
-	}
-
-	if _, _, _, err := s.syncGameVersion(); err != nil {
-		return State{}, err
-	}
-	_, _ = s.syncVersionAndDispatch(context.Background(), false)
-	s.emitState()
-	if autoClip || clipCheck {
-		s.wakeMonitorLoop()
-	}
-	return s.State(), nil
-}
-
-// SaveSetting updates a single config field and persists the config.
-func (s *Service) SaveSetting(key string, value any) (State, error) {
-	key = strings.TrimSpace(key)
+	opacity = clampBackgroundOpacity(opacity)
 
 	s.mu.Lock()
 	if s.cfg == nil {
 		s.mu.Unlock()
 		return s.State(), fmt.Errorf("config is not loaded")
 	}
-	oldVal := settingAuditValue(s.cfg, key)
+	prevGamePath := s.cfg.GamePath
+	prevClipCheck := s.cfg.ClipCheck
+	prevAutoClip := s.cfg.AutoClip
+
 	nextCfg := s.cfg.Clone()
-	if err := applySettingValue(nextCfg, key, value); err != nil {
-		s.mu.Unlock()
-		return s.State(), err
-	}
-	newVal := settingAuditValue(nextCfg, key)
+	nextCfg.GamePath = resolvedGamePath
+	nextCfg.ClipCheck = clipCheck
+	nextCfg.AutoClose = autoClose
+	nextCfg.AutoClip = autoClip
+	nextCfg.PanelBlur = panelBlur
+	nextCfg.BackgroundOpacity = opacity
+	nextCfg.SleepTime = defaultSleepTime
 	err := config.Save(s.cfgPath, nextCfg)
 	if err == nil {
 		s.cfg = nextCfg
 	}
 	s.mu.Unlock()
-
-	if s.fileLog != nil {
-		if err != nil {
-			s.fileLog.Writef("save setting failed: %s '%s' -> '%s': %v", key, oldVal, newVal, err)
-		} else {
-			s.fileLog.Writef("save setting: %s '%s' -> '%s'", key, oldVal, newVal)
-		}
+	if err != nil {
+		return State{}, err
 	}
+
+	if resolvedGamePath != prevGamePath {
+		if _, _, _, err := s.syncGameVersion(); err != nil {
+			return State{}, err
+		}
+		_, _ = s.syncVersionAndDispatch(context.Background(), false)
+	}
+	s.emitState()
+	if autoClip || clipCheck || prevAutoClip || prevClipCheck {
+		s.wakeMonitorLoop()
+	}
+	return s.State(), nil
+}
+
+func (s *Service) SaveCredentialSettings(hi3uid string, updateHI3UID bool, biliHitoken string, updateBiliHitoken bool, asteriskName string) (State, error) {
+	s.mu.Lock()
+	if s.cfg == nil {
+		s.mu.Unlock()
+		return s.State(), fmt.Errorf("config is not loaded")
+	}
+	nextCfg := s.cfg.Clone()
+	if updateHI3UID {
+		nextCfg.HI3UID = strings.TrimSpace(hi3uid)
+	}
+	if updateBiliHitoken {
+		nextCfg.BILIHITOKEN = strings.TrimSpace(biliHitoken)
+	}
+	nextCfg.AsteriskName = strings.TrimSpace(asteriskName)
+	err := config.Save(s.cfgPath, nextCfg)
+	if err == nil {
+		s.cfg = nextCfg
+	}
+	s.mu.Unlock()
 	if err != nil {
 		return s.State(), err
 	}
 
 	s.emitState()
-	switch key {
-	case "auto_clip", "clip_check", "game_path":
-		s.wakeMonitorLoop()
-	}
 	return s.State(), nil
 }
 
@@ -459,85 +460,6 @@ func (s *Service) RecordClientMessage(message string) {
 		return
 	}
 	s.fileLog.Writef("%s", message)
-}
-
-func applySettingValue(cfg *config.Config, key string, value any) error {
-	switch key {
-	case "account":
-		cfg.Account = strings.TrimSpace(fmt.Sprintf("%v", value))
-	case "password":
-		cfg.Password = fmt.Sprintf("%v", value)
-	case "HI3UID":
-		cfg.HI3UID = strings.TrimSpace(fmt.Sprintf("%v", value))
-	case "BILIHITOKEN":
-		cfg.BILIHITOKEN = strings.TrimSpace(fmt.Sprintf("%v", value))
-	case "panel_blur":
-		b, ok := value.(bool)
-		if !ok {
-			return fmt.Errorf("setting %s expects bool", key)
-		}
-		cfg.PanelBlur = b
-	case "clip_check":
-		b, ok := value.(bool)
-		if !ok {
-			return fmt.Errorf("setting %s expects bool", key)
-		}
-		cfg.ClipCheck = b
-	case "auto_clip":
-		b, ok := value.(bool)
-		if !ok {
-			return fmt.Errorf("setting %s expects bool", key)
-		}
-		cfg.AutoClip = b
-	case "auto_close":
-		b, ok := value.(bool)
-		if !ok {
-			return fmt.Errorf("setting %s expects bool", key)
-		}
-		cfg.AutoClose = b
-	case "background_opacity":
-		f, ok := value.(float64)
-		if !ok {
-			return fmt.Errorf("setting %s expects number", key)
-		}
-		cfg.BackgroundOpacity = clampBackgroundOpacity(f)
-	case "game_path":
-		cfg.GamePath = strings.TrimSpace(fmt.Sprintf("%v", value))
-	default:
-		return fmt.Errorf("unknown setting: %s", key)
-	}
-	return nil
-}
-
-func settingAuditValue(cfg *config.Config, key string) string {
-	if cfg == nil {
-		return "<nil>"
-	}
-
-	switch key {
-	case "account":
-		return maskSecret(cfg.Account)
-	case "password":
-		return "<redacted>"
-	case "HI3UID":
-		return maskSecret(cfg.HI3UID)
-	case "BILIHITOKEN":
-		return maskSecret(cfg.BILIHITOKEN)
-	case "panel_blur":
-		return fmt.Sprintf("%v", cfg.PanelBlur)
-	case "clip_check":
-		return fmt.Sprintf("%v", cfg.ClipCheck)
-	case "auto_clip":
-		return fmt.Sprintf("%v", cfg.AutoClip)
-	case "auto_close":
-		return fmt.Sprintf("%v", cfg.AutoClose)
-	case "background_opacity":
-		return fmt.Sprintf("%v", cfg.BackgroundOpacity)
-	case "game_path":
-		return cfg.GamePath
-	default:
-		return "<unknown>"
-	}
 }
 
 func (s *Service) UpdateBackground(backgroundPath string, opacity float64) (State, error) {
@@ -626,6 +548,37 @@ func (s *Service) Login(ctx context.Context, account, password string, openBrows
 	return s.login(ctx, account, password, nil, openBrowser)
 }
 
+func (s *Service) SelectSavedAccount(account string) (State, error) {
+	account = strings.TrimSpace(account)
+	if account == "" {
+		return s.State(), fmt.Errorf("saved account is required")
+	}
+
+	s.mu.Lock()
+	if s.cfg == nil {
+		s.mu.Unlock()
+		return s.State(), fmt.Errorf("config is not loaded")
+	}
+	nextCfg := s.cfg.Clone()
+	if !nextCfg.ApplySavedAccount(account) {
+		s.mu.Unlock()
+		return s.State(), fmt.Errorf("saved account not found")
+	}
+	if err := config.Save(s.cfgPath, nextCfg); err != nil {
+		s.mu.Unlock()
+		return s.State(), err
+	}
+	s.cfg = nextCfg
+	s.sessionInfo = nil
+	s.mu.Unlock()
+	s.clearPendingCredentials()
+	s.restartMonitorContext()
+
+	s.logf("switched active account to %s", maskSecret(account))
+	s.emitState()
+	return s.State(), nil
+}
+
 func (s *Service) LaunchGame() error {
 	cfg := s.Config()
 	_, err := gameclient.Launch(cfg.GamePath)
@@ -645,16 +598,6 @@ func (s *Service) LaunchGame() error {
 
 func (s *Service) EnsureCaptchaServer() error {
 	return s.startServer()
-}
-
-func (s *Service) OpenCaptchaURL() error {
-	s.mu.RLock()
-	target := s.captchaURL
-	s.mu.RUnlock()
-	if target == "" {
-		return localizedErrorf("backend.error.captcha_url_empty", nil, "captcha url is empty")
-	}
-	return browser.OpenURL(target)
 }
 
 func (s *Service) EnsureSession(ctx context.Context) error {
@@ -753,6 +696,8 @@ func (s *Service) EnsureSession(ctx context.Context) error {
 
 func (s *Service) clearCachedSession(reason string) {
 	s.mu.Lock()
+	currentAccount := s.cfg.Account
+	s.cfg.ClearSavedAccountSession(currentAccount)
 	s.sessionInfo = nil
 	s.cfg.LastLoginSucc = false
 	s.cfg.AccountLogin = false
@@ -768,7 +713,36 @@ func (s *Service) clearCachedSession(reason string) {
 	if strings.TrimSpace(reason) != "" {
 		s.logf("%s", reason)
 	}
+	s.restartMonitorContext()
 	s.emitState()
+}
+
+func (s *Service) saveAccountStateLocked(account, password string, uid int64, accessKey, uname string, lastLoginSucc, accountLogin bool) error {
+	if account != "" {
+		s.cfg.Account = account
+	}
+	if password != "" {
+		s.cfg.Password = password
+	}
+	if uid != 0 {
+		s.cfg.UID = uid
+	}
+	s.cfg.AccessKey = accessKey
+	s.cfg.LastLoginSucc = lastLoginSucc
+	if uname != "" {
+		s.cfg.UName = uname
+	}
+	s.cfg.CurrentAccount = s.cfg.Account
+	s.cfg.UpsertSavedAccount(config.SavedAccount{
+		Account:       s.cfg.Account,
+		Password:      s.cfg.Password,
+		UID:           s.cfg.UID,
+		AccessKey:     s.cfg.AccessKey,
+		UName:         s.cfg.UName,
+		LastLoginSucc: s.cfg.LastLoginSucc,
+	})
+	s.cfg.AccountLogin = accountLogin
+	return config.Save(s.cfgPath, s.cfg)
 }
 
 func (s *Service) ScanTicket(ctx context.Context, ticket string) (ScanResult, error) {
@@ -861,27 +835,17 @@ func (s *Service) ScanClipboardOnce(ctx context.Context) (bool, error) {
 }
 
 func (s *Service) ScanWindow(ctx context.Context) (ScanWindowResult, error) {
-	for attempt := 0; attempt < manualWindowScanAttempts; attempt++ {
-		matched, hint, err := s.scanWindowOnce(ctx, false)
-		if err != nil {
-			return ScanWindowResult{}, err
-		}
-		if matched {
-			return ScanWindowResult{Matched: true}, nil
-		}
-		if hint.Code != "" {
-			return newScanWindowResult(false, hint), nil
-		}
-		if attempt+1 < manualWindowScanAttempts {
-			time.Sleep(manualWindowScanDelay)
-		}
+	matched, hint, err := s.scanWindowOnce(ctx, false)
+	if err != nil {
+		return ScanWindowResult{}, err
+	}
+	if matched {
+		return ScanWindowResult{Matched: true}, nil
+	}
+	if hint.Code != "" {
+		return newScanWindowResult(false, hint), nil
 	}
 	return ScanWindowResult{Matched: false}, nil
-}
-
-func (s *Service) ScanWindowOnce(ctx context.Context) (bool, error) {
-	matched, _, err := s.scanWindowOnce(ctx, false)
-	return matched, err
 }
 
 func (s *Service) monitorLoop(ctx context.Context) {
@@ -893,12 +857,13 @@ func (s *Service) monitorLoop(ctx context.Context) {
 		}
 
 		cfg := s.Config()
-		if cfg.AutoClip {
+		paused := s.monitorPaused()
+		if !paused && cfg.AutoClip {
 			if _, _, err := s.scanWindowOnce(ctx, true); err != nil {
 				s.logf("window capture failed: %v", err)
 			}
 		}
-		if cfg.ClipCheck {
+		if !paused && cfg.ClipCheck {
 			if _, err := s.scanClipboardOnce(ctx, true); err != nil {
 				s.logf("clipboard scan failed: %v", err)
 			}
@@ -944,6 +909,49 @@ func (s *Service) monitorSleepTime() int {
 		return defaultSleepTime
 	}
 	return sleepTime
+}
+
+func (s *Service) PauseMonitor() {
+	s.mu.Lock()
+	s.monitorPauseDepth++
+	s.mu.Unlock()
+}
+
+func (s *Service) ResumeMonitor() {
+	shouldWake := false
+	s.mu.Lock()
+	if s.monitorPauseDepth > 0 {
+		s.monitorPauseDepth--
+	}
+	shouldWake = s.monitorPauseDepth == 0
+	s.mu.Unlock()
+	if shouldWake {
+		s.wakeMonitorLoop()
+	}
+}
+
+func (s *Service) monitorPaused() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.monitorPauseDepth > 0
+}
+
+func (s *Service) resetMonitorStateLocked() {
+	s.recentTickets = map[string]time.Time{}
+	s.clipboardHash = ""
+	s.windowMissStreak = 0
+	s.windowStaticStreak = 0
+	s.windowFingerprint = ""
+	s.lastNoticeCode = ""
+	s.lastNoticeAt = time.Time{}
+	s.lastNoticeLogAt = time.Time{}
+}
+
+func (s *Service) restartMonitorContext() {
+	s.mu.Lock()
+	s.resetMonitorStateLocked()
+	s.mu.Unlock()
+	s.wakeMonitorLoop()
 }
 
 func looksLikeAccessBlock(message string) bool {
@@ -1168,7 +1176,8 @@ func (s *Service) scanClipboardOnce(ctx context.Context, silent bool) (bool, err
 	s.clipboardHash = sum
 	s.mu.Unlock()
 
-	return s.consumeTicket(ctx, ticket, rawURL, true)
+	ok, _, err := s.consumeTicketResult(ctx, ticket, rawURL, true)
+	return ok, err
 }
 
 func (s *Service) scanWindowOnce(ctx context.Context, silent bool) (bool, MessageRef, error) {
@@ -1211,7 +1220,7 @@ func (s *Service) scanWindowOnce(ctx context.Context, silent bool) (bool, Messag
 	if consumeErr == nil {
 		if isExpiredScanResult(scanResult) {
 			s.logf("scan reported expired QR; manual refresh is required")
-			hint, hintErr := s.tryRefreshExpiredWindowQRCode(window, img)
+			hint, hintErr := s.tryRefreshExpiredWindowQRCode(img)
 			if hintErr != nil {
 				s.logf("window QR state analysis failed: %v", hintErr)
 			}
@@ -1229,22 +1238,12 @@ func (s *Service) scanWindowOnce(ctx context.Context, silent bool) (bool, Messag
 	return false, MessageRef{}, nil
 }
 
-func (s *Service) consumeImage(ctx context.Context, img image.Image, clearClipboard bool) (bool, error) {
-	ok, _, err := s.consumeImageResult(ctx, img, clearClipboard)
-	return ok, err
-}
-
 func (s *Service) consumeImageResult(ctx context.Context, img image.Image, clearClipboard bool) (bool, ScanResult, error) {
 	ticket, rawURL, err := qr.DecodeTicketFromImage(img)
 	if err != nil {
 		return false, ScanResult{}, err
 	}
 	return s.consumeTicketResult(ctx, ticket, rawURL, clearClipboard)
-}
-
-func (s *Service) consumeTicket(ctx context.Context, ticket, rawURL string, clearClipboard bool) (bool, error) {
-	ok, _, err := s.consumeTicketResult(ctx, ticket, rawURL, clearClipboard)
-	return ok, err
 }
 
 func (s *Service) consumeTicketResult(ctx context.Context, ticket, rawURL string, clearClipboard bool) (bool, ScanResult, error) {
@@ -1312,6 +1311,8 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 	s.mu.Unlock()
 	s.emitState()
 	keepPendingCredentials := false
+	requestedAccount := strings.TrimSpace(account)
+	canReuseStoredPassword := requestedAccount == "" || strings.EqualFold(strings.TrimSpace(cfg.Account), requestedAccount)
 	defer func() {
 		if !keepPendingCredentials {
 			s.clearPendingCredentials()
@@ -1324,7 +1325,7 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 		if account == "" {
 			account = cfg.Account
 		}
-		if password == "" {
+		if password == "" && canReuseStoredPassword {
 			password = cfg.Password
 		}
 		if account != "" && password != "" {
@@ -1423,24 +1424,13 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 		result.SessionReady = true
 
 		s.mu.Lock()
-		if account != "" {
-			s.cfg.Account = account
-		}
-		if helperResp.UID != 0 {
-			s.cfg.UID = helperResp.UID
-		}
-		s.cfg.AccessKey = helperResp.AccessKey
-		s.cfg.LastLoginSucc = true
-		if result.UName != "" {
-			s.cfg.UName = result.UName
-		}
 		s.sessionInfo = cloneSessionInfo(&helperResp.Session)
-		s.cfg.AccountLogin = true
-		saveErr := config.Save(s.cfgPath, s.cfg)
+		saveErr := s.saveAccountStateLocked(account, password, helperResp.UID, helperResp.AccessKey, result.UName, true, true)
 		s.mu.Unlock()
 		if saveErr != nil {
 			return result, saveErr
 		}
+		s.restartMonitorContext()
 
 		dispatchResp, err := s.syncVersionAndDispatch(ctx, true)
 		if err != nil {
@@ -1455,13 +1445,9 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 		s.mu.Lock()
 		s.captchaPending = false
 		s.captchaURL = ""
-		saveErr = config.Save(s.cfgPath, s.cfg)
 		s.mu.Unlock()
 		if s.server != nil {
 			s.server.ClearChallengeState()
-		}
-		if saveErr != nil {
-			return result, saveErr
 		}
 
 		result.OK = true
@@ -1484,6 +1470,7 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 			result.SessionReady = true
 		} else {
 			s.mu.Lock()
+			s.cfg.ClearSavedAccountSession(s.cfg.Account)
 			s.cfg.LastLoginSucc = false
 			s.cfg.UID = 0
 			s.cfg.AccessKey = ""
@@ -1503,7 +1490,7 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 		if account == "" {
 			account = cfg.Account
 		}
-		if password == "" {
+		if password == "" && canReuseStoredPassword {
 			password = cfg.Password
 		}
 		if account == "" || password == "" {
@@ -1585,16 +1572,7 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 		}
 
 		s.mu.Lock()
-		s.cfg.Account = account
-		if parsedUID := config.Int64Value(uid); parsedUID != 0 {
-			s.cfg.UID = parsedUID
-		}
-		s.cfg.AccessKey = accessKey
-		s.cfg.LastLoginSucc = true
-		if result.UName != "" {
-			s.cfg.UName = result.UName
-		}
-		saveErr := config.Save(s.cfgPath, s.cfg)
+		saveErr := s.saveAccountStateLocked(account, password, config.Int64Value(uid), accessKey, result.UName, true, false)
 		s.mu.Unlock()
 		if saveErr != nil {
 			return result, saveErr
@@ -1652,12 +1630,12 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 
 	s.mu.Lock()
 	s.sessionInfo = cloneSessionInfo(session)
-	s.cfg.AccountLogin = true
-	saveErr := config.Save(s.cfgPath, s.cfg)
+	saveErr := s.saveAccountStateLocked(account, password, 0, accessKey, result.UName, true, true)
 	s.mu.Unlock()
 	if saveErr != nil {
 		return result, saveErr
 	}
+	s.restartMonitorContext()
 
 	dispatchResp, err := s.syncVersionAndDispatch(ctx, true)
 	if err != nil {
@@ -1672,13 +1650,9 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 	s.mu.Lock()
 	s.captchaPending = false
 	s.captchaURL = ""
-	saveErr = config.Save(s.cfgPath, s.cfg)
 	s.mu.Unlock()
 	if s.server != nil {
 		s.server.ClearChallengeState()
-	}
-	if saveErr != nil {
-		return result, saveErr
 	}
 
 	result.OK = true
@@ -1735,20 +1709,30 @@ func (s *Service) setHint(ref MessageRef, logText string) {
 
 	now := time.Now()
 	s.mu.Lock()
-	if s.lastNoticeCode == ref.Code && now.Sub(s.lastNoticeAt) < 4*time.Second {
+	sameCode := s.lastNoticeCode == ref.Code
+	shouldEmitState := !sameCode || now.Sub(s.lastNoticeAt) >= hintStateInterval
+	shouldWriteLog := !sameCode || now.Sub(s.lastNoticeLogAt) >= hintLogInterval
+	if !shouldEmitState && !shouldWriteLog {
 		s.mu.Unlock()
 		return
 	}
-	s.lastError = text
-	s.lastErrorMessage = cloneMessageRef(ref)
-	s.lastNoticeCode = ref.Code
-	s.lastNoticeAt = now
+	if shouldEmitState {
+		s.lastError = text
+		s.lastErrorMessage = cloneMessageRef(ref)
+		s.lastNoticeCode = ref.Code
+		s.lastNoticeAt = now
+	}
+	if shouldWriteLog {
+		s.lastNoticeLogAt = now
+	}
 	s.mu.Unlock()
 
-	if s.fileLog != nil {
+	if shouldWriteLog && s.fileLog != nil {
 		s.fileLog.Writef("hint: %s", s.sanitizeMessage(text))
 	}
-	s.emitState()
+	if shouldEmitState {
+		s.emitState()
+	}
 }
 
 func translateMessageRef(ref MessageRef) string {
@@ -2345,6 +2329,7 @@ func bridgeConfigSnapshot(cfg *config.Config) bridge.ConfigSnapshot {
 		GamePath:              cfg.GamePath,
 		BHVer:                 cfg.BHVer,
 		BiliPkgVer:            cfg.BiliPkgVer,
+		AsteriskName:          cfg.AsteriskName,
 		VersionAPI:            cfg.VersionAPI,
 		DispatchAPI:           cfg.DispatchAPI,
 		DispatchData:          cfg.DispatchData,

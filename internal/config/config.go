@@ -11,6 +11,7 @@ import (
 )
 
 const dispatchVersionSuffix = "_gf_android_bilibili"
+const DefaultAsteriskName = "HI3LoaderV1"
 
 type DispatchCacheEntry struct {
 	Data          string `json:"data"`
@@ -21,36 +22,48 @@ type DispatchCacheEntry struct {
 	SavedAt       string `json:"saved_at,omitempty"`
 }
 
+type SavedAccount struct {
+	Account       string `json:"account"`
+	Password      string `json:"password,omitempty"`
+	UID           int64  `json:"uid,omitempty"`
+	AccessKey     string `json:"access_key,omitempty"`
+	UName         string `json:"uname,omitempty"`
+	LastLoginSucc bool   `json:"last_login_succ,omitempty"`
+}
+
 type Config struct {
-	Account   string `json:"account"`
-	Password  string `json:"password,omitempty"`
-	SleepTime int    `json:"sleep_time"`
-	ClipCheck bool   `json:"clip_check"`
-	AutoClose bool   `json:"auto_close"`
-	GamePath  string `json:"game_path,omitempty"`
-	UID       int64  `json:"uid"`
-	AccessKey string `json:"access_key,omitempty"`
+	CurrentAccount string `json:"current_account,omitempty"`
+	Account        string `json:"account"`
+	Password       string `json:"password,omitempty"`
+	SleepTime      int    `json:"sleep_time"`
+	ClipCheck      bool   `json:"clip_check"`
+	AutoClose      bool   `json:"auto_close"`
+	GamePath       string `json:"game_path,omitempty"`
+	UID            int64  `json:"uid"`
+	AccessKey      string `json:"access_key,omitempty"`
 	// Additional credentials requested
-	HI3UID                string  `json:"HI3UID,omitempty"`
-	BILIHITOKEN           string  `json:"BILIHITOKEN,omitempty"`
-	LastLoginSucc         bool    `json:"last_login_succ"`
-	BHVer                 string  `json:"bh_ver"`
-	BiliPkgVer            int     `json:"bili_pkg_ver,omitempty"` // Cached package version associated with the current BILIHITOKEN.
-	UName                 string  `json:"uname"`
-	AutoClip              bool    `json:"auto_clip"`
-	AccountLogin          bool    `json:"account_login"`
-	VersionAPI            string  `json:"version_api,omitempty"`
-	DispatchAPI           string  `json:"dispatch_api,omitempty"`
-	DispatchData          string  `json:"dispatch_data,omitempty"`
-	DispatchVersion       string  `json:"dispatch_version,omitempty"`
-	DispatchSource        string  `json:"dispatch_source,omitempty"`
-	DispatchRawLen        int     `json:"dispatch_raw_len,omitempty"`
-	DispatchDecodedLen    int     `json:"dispatch_decoded_len,omitempty"`
-	DispatchDecodedSHA256 string  `json:"dispatch_decoded_sha256,omitempty"`
-	DispatchSavedAt       string  `json:"dispatch_saved_at,omitempty"`
-	BackgroundImage       string  `json:"background_image,omitempty"`
-	BackgroundOpacity     float64 `json:"background_opacity"`
-	PanelBlur             bool    `json:"panel_blur"`
+	HI3UID                string         `json:"HI3UID,omitempty"`
+	BILIHITOKEN           string         `json:"BILIHITOKEN,omitempty"`
+	AsteriskName          string         `json:"asterisk_name,omitempty"`
+	LastLoginSucc         bool           `json:"last_login_succ"`
+	BHVer                 string         `json:"bh_ver"`
+	BiliPkgVer            int            `json:"bili_pkg_ver,omitempty"` // Cached package version associated with the current BILIHITOKEN.
+	UName                 string         `json:"uname"`
+	Accounts              []SavedAccount `json:"accounts,omitempty"`
+	AutoClip              bool           `json:"auto_clip"`
+	AccountLogin          bool           `json:"account_login"`
+	VersionAPI            string         `json:"version_api,omitempty"`
+	DispatchAPI           string         `json:"dispatch_api,omitempty"`
+	DispatchData          string         `json:"dispatch_data,omitempty"`
+	DispatchVersion       string         `json:"dispatch_version,omitempty"`
+	DispatchSource        string         `json:"dispatch_source,omitempty"`
+	DispatchRawLen        int            `json:"dispatch_raw_len,omitempty"`
+	DispatchDecodedLen    int            `json:"dispatch_decoded_len,omitempty"`
+	DispatchDecodedSHA256 string         `json:"dispatch_decoded_sha256,omitempty"`
+	DispatchSavedAt       string         `json:"dispatch_saved_at,omitempty"`
+	BackgroundImage       string         `json:"background_image,omitempty"`
+	BackgroundOpacity     float64        `json:"background_opacity"`
+	PanelBlur             bool           `json:"panel_blur"`
 
 	cryptoSalt string
 }
@@ -58,6 +71,7 @@ type Config struct {
 func Default() *Config {
 	return &Config{
 		SleepTime:         3,
+		AsteriskName:      DefaultAsteriskName,
 		BackgroundOpacity: 0.35,
 		PanelBlur:         true,
 	}
@@ -130,6 +144,9 @@ func (c *Config) Clone() *Config {
 		return nil
 	}
 	clone := *c
+	if len(c.Accounts) > 0 {
+		clone.Accounts = append([]SavedAccount(nil), c.Accounts...)
+	}
 	clone.Normalize()
 	return &clone
 }
@@ -141,6 +158,7 @@ func (c *Config) Normalize() bool {
 	changed := false
 
 	changed = normalizeStringField(&c.Account) || changed
+	changed = normalizeStringField(&c.CurrentAccount) || changed
 	changed = normalizeStringField(&c.Password) || changed
 	changed = normalizeStringField(&c.AccessKey) || changed
 	changed = normalizeStringField(&c.UName) || changed
@@ -156,6 +174,11 @@ func (c *Config) Normalize() bool {
 	changed = normalizeStringField(&c.BackgroundImage) || changed
 	changed = normalizeStringField(&c.HI3UID) || changed
 	changed = normalizeStringField(&c.BILIHITOKEN) || changed
+	changed = normalizeStringField(&c.AsteriskName) || changed
+	if c.AsteriskName == "" {
+		c.AsteriskName = DefaultAsteriskName
+		changed = true
+	}
 	if c.SleepTime <= 0 {
 		c.SleepTime = 3
 		changed = true
@@ -181,9 +204,245 @@ func (c *Config) Normalize() bool {
 		}
 	}
 
+	changed = normalizeSavedAccounts(c) || changed
 	changed = normalizeDispatchSnapshot(c) || changed
 
 	return changed
+}
+
+func normalizeSavedAccounts(c *Config) bool {
+	if c == nil {
+		return false
+	}
+
+	changed := false
+	normalized := make([]SavedAccount, 0, len(c.Accounts)+1)
+	seen := make(map[string]struct{}, len(c.Accounts)+1)
+
+	appendIfValid := func(entry SavedAccount) {
+		if !normalizeSavedAccount(&entry) {
+			changed = true
+			return
+		}
+		identity := savedAccountIdentity(entry.Account)
+		if identity == "" {
+			changed = true
+			return
+		}
+		if _, exists := seen[identity]; exists {
+			changed = true
+			return
+		}
+		seen[identity] = struct{}{}
+		normalized = append(normalized, entry)
+	}
+
+	for _, entry := range c.Accounts {
+		appendIfValid(entry)
+	}
+
+	if identity := savedAccountIdentity(c.Account); identity != "" {
+		if _, exists := seen[identity]; !exists {
+			appendIfValid(SavedAccount{
+				Account:       c.Account,
+				Password:      c.Password,
+				UID:           c.UID,
+				AccessKey:     c.AccessKey,
+				UName:         c.UName,
+				LastLoginSucc: c.LastLoginSucc,
+			})
+			changed = true
+		}
+	}
+
+	if c.CurrentAccount == "" && c.Account != "" {
+		c.CurrentAccount = c.Account
+		changed = true
+	}
+
+	if c.CurrentAccount == "" && len(normalized) > 0 {
+		c.CurrentAccount = normalized[0].Account
+		changed = true
+	}
+
+	if len(normalized) == 0 {
+		if len(c.Accounts) != 0 {
+			c.Accounts = nil
+			changed = true
+		}
+		c.CurrentAccount = ""
+		c.Account = ""
+		c.Password = ""
+		c.UID = 0
+		c.AccessKey = ""
+		c.UName = ""
+		c.LastLoginSucc = false
+		return changed
+	}
+
+	if len(normalized) != len(c.Accounts) {
+		c.Accounts = normalized
+		changed = true
+	}
+
+	if len(c.Accounts) == len(normalized) {
+		for idx := range normalized {
+			if c.Accounts[idx] != normalized[idx] {
+				c.Accounts = normalized
+				changed = true
+				break
+			}
+		}
+	}
+
+	if c.CurrentAccount != "" {
+		if entry, ok := c.FindSavedAccount(c.CurrentAccount); ok {
+			changed = syncActiveAccountFields(c, entry) || changed
+		} else if len(c.Accounts) > 0 {
+			c.CurrentAccount = c.Accounts[0].Account
+			changed = syncActiveAccountFields(c, c.Accounts[0]) || true
+		}
+	}
+
+	return changed
+}
+
+func syncActiveAccountFields(c *Config, entry SavedAccount) bool {
+	changed := false
+	if c.Account != entry.Account {
+		c.Account = entry.Account
+		changed = true
+	}
+	if c.Password != entry.Password {
+		c.Password = entry.Password
+		changed = true
+	}
+	if c.UID != entry.UID {
+		c.UID = entry.UID
+		changed = true
+	}
+	if c.AccessKey != entry.AccessKey {
+		c.AccessKey = entry.AccessKey
+		changed = true
+	}
+	if c.UName != entry.UName {
+		c.UName = entry.UName
+		changed = true
+	}
+	if c.LastLoginSucc != entry.LastLoginSucc {
+		c.LastLoginSucc = entry.LastLoginSucc
+		changed = true
+	}
+	return changed
+}
+
+func normalizeSavedAccount(entry *SavedAccount) bool {
+	if entry == nil {
+		return false
+	}
+	normalizeStringField(&entry.Account)
+	normalizeStringField(&entry.Password)
+	normalizeStringField(&entry.AccessKey)
+	normalizeStringField(&entry.UName)
+	if entry.Account == "" {
+		return false
+	}
+	if entry.AccessKey == "" {
+		entry.LastLoginSucc = false
+	}
+	return true
+}
+
+func savedAccountIdentity(account string) string {
+	account = strings.TrimSpace(strings.ToLower(account))
+	return account
+}
+
+func (c *Config) FindSavedAccount(account string) (SavedAccount, bool) {
+	if c == nil {
+		return SavedAccount{}, false
+	}
+	identity := savedAccountIdentity(account)
+	if identity == "" {
+		return SavedAccount{}, false
+	}
+	for _, entry := range c.Accounts {
+		if savedAccountIdentity(entry.Account) == identity {
+			return entry, true
+		}
+	}
+	return SavedAccount{}, false
+}
+
+func (c *Config) UpsertSavedAccount(entry SavedAccount) bool {
+	if c == nil {
+		return false
+	}
+	if !normalizeSavedAccount(&entry) {
+		return false
+	}
+	identity := savedAccountIdentity(entry.Account)
+	for idx := range c.Accounts {
+		if savedAccountIdentity(c.Accounts[idx].Account) != identity {
+			continue
+		}
+		if c.Accounts[idx] == entry {
+			return false
+		}
+		c.Accounts[idx] = entry
+		return true
+	}
+	c.Accounts = append(c.Accounts, entry)
+	return true
+}
+
+func (c *Config) ApplySavedAccount(account string) bool {
+	if c == nil {
+		return false
+	}
+	entry, ok := c.FindSavedAccount(account)
+	if !ok {
+		return false
+	}
+
+	changed := false
+	if c.CurrentAccount != entry.Account {
+		c.CurrentAccount = entry.Account
+		changed = true
+	}
+	changed = syncActiveAccountFields(c, entry) || changed
+	if c.AccountLogin {
+		c.AccountLogin = false
+		changed = true
+	}
+	return changed
+}
+
+func (c *Config) ClearSavedAccountSession(account string) bool {
+	if c == nil {
+		return false
+	}
+	identity := savedAccountIdentity(account)
+	if identity == "" {
+		return false
+	}
+	for idx := range c.Accounts {
+		entry := &c.Accounts[idx]
+		if savedAccountIdentity(entry.Account) != identity {
+			continue
+		}
+		changed := false
+		if entry.AccessKey != "" {
+			entry.AccessKey = ""
+			changed = true
+		}
+		if entry.LastLoginSucc {
+			entry.LastLoginSucc = false
+			changed = true
+		}
+		return changed
+	}
+	return false
 }
 
 func StringValue(v any) string {
@@ -473,7 +732,6 @@ func needsUpgrade(raw []byte) bool {
 	}
 
 	required := []string{
-		"account_login",
 		"background_opacity",
 		"panel_blur",
 	}
@@ -487,6 +745,19 @@ func needsUpgrade(raw []byte) bool {
 		"ver",
 		"auto_expand_qrcode",
 		"auto_refresh_expired_qr",
+	} {
+		if _, ok := keys[key]; ok {
+			return true
+		}
+	}
+	for _, key := range []string{
+		"account",
+		"password",
+		"uid",
+		"access_key",
+		"uname",
+		"last_login_succ",
+		"account_login",
 	} {
 		if _, ok := keys[key]; ok {
 			return true

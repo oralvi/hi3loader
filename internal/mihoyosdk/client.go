@@ -278,6 +278,11 @@ func (c *Client) ScanConfirm(ctx context.Context, session SessionInfo, ticket st
 	scanRaw["open_id"] = session.OpenID
 	scanRaw["combo_id"] = session.ComboID
 	scanRaw["combo_token"] = session.ComboToken
+	name := config.DefaultAsteriskName
+	if cfg != nil && strings.TrimSpace(cfg.AsteriskName) != "" {
+		name = strings.TrimSpace(cfg.AsteriskName)
+	}
+	scanRaw["asterisk_name"] = name
 
 	scanPayload, err := parseJSONMap(scanPayloadR)
 	if err != nil {
@@ -373,9 +378,12 @@ func (c *Client) fetchDispatch(ctx context.Context, version, uid string, cfg *co
 			token = strings.TrimSpace(cfg.BILIHITOKEN)
 		}
 		if token == "" {
-			attempts := 3
+			retryDelays := []time.Duration{
+				700 * time.Millisecond,
+				1400 * time.Millisecond,
+			}
 			var lastErr error
-			for i := 0; i < attempts; i++ {
+			for i := 0; i <= len(retryDelays); i++ {
 				info, err := bilihitoken.FetchReleaseInfo(c.http)
 				if err == nil {
 					t, err2 := bilihitoken.FetchCredential(c.http, info.PackageURL)
@@ -387,8 +395,14 @@ func (c *Client) fetchDispatch(ctx context.Context, version, uid string, cfg *co
 				} else {
 					lastErr = err
 				}
-				if i < attempts-1 {
-					time.Sleep(5 * time.Second)
+				if i < len(retryDelays) {
+					timer := time.NewTimer(retryDelays[i])
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						return nil, ctx.Err()
+					case <-timer.C:
+					}
 				}
 			}
 			if token == "" {

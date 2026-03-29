@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$baseVersion = "1.1.1"
+$baseVersion = "1.1.2"
 $buildTime = Get-Date
 $buildDate = $buildTime.ToString("yyMMddHHmmss")
 $bytes = New-Object byte[] 4

@@ -21,35 +21,38 @@ const (
 )
 
 var canonicalFieldKinds = map[string]jsonKind{
-	"account":                jsonKindString,
-	"password":               jsonKindString,
-	"sleep_time":             jsonKindNumber,
-	"clip_check":             jsonKindBool,
-	"auto_close":             jsonKindBool,
-	"game_path":              jsonKindString,
-	"uid":                    jsonKindNumber,
-	"access_key":             jsonKindString,
-	"HI3UID":                 jsonKindString,
-	"BILIHITOKEN":            jsonKindString,
-	"last_login_succ":        jsonKindBool,
-	"bh_ver":                 jsonKindString,
-	"bili_pkg_ver":           jsonKindNumber,
-	"uname":                  jsonKindString,
-	"auto_clip":              jsonKindBool,
-	"account_login":          jsonKindBool,
-	"version_api":            jsonKindString,
-	"dispatch_api":           jsonKindString,
-	"dispatch_data":          jsonKindString,
-	"dispatch_version":       jsonKindString,
-	"dispatch_source":        jsonKindString,
-	"dispatch_raw_len":       jsonKindNumber,
-	"dispatch_decoded_len":   jsonKindNumber,
+	"account":                 jsonKindString,
+	"current_account":         jsonKindString,
+	"password":                jsonKindString,
+	"sleep_time":              jsonKindNumber,
+	"clip_check":              jsonKindBool,
+	"auto_close":              jsonKindBool,
+	"game_path":               jsonKindString,
+	"uid":                     jsonKindNumber,
+	"access_key":              jsonKindString,
+	"HI3UID":                  jsonKindString,
+	"BILIHITOKEN":             jsonKindString,
+	"asterisk_name":           jsonKindString,
+	"last_login_succ":         jsonKindBool,
+	"bh_ver":                  jsonKindString,
+	"bili_pkg_ver":            jsonKindNumber,
+	"uname":                   jsonKindString,
+	"accounts":                jsonKindArray,
+	"auto_clip":               jsonKindBool,
+	"account_login":           jsonKindBool,
+	"version_api":             jsonKindString,
+	"dispatch_api":            jsonKindString,
+	"dispatch_data":           jsonKindString,
+	"dispatch_version":        jsonKindString,
+	"dispatch_source":         jsonKindString,
+	"dispatch_raw_len":        jsonKindNumber,
+	"dispatch_decoded_len":    jsonKindNumber,
 	"dispatch_decoded_sha256": jsonKindString,
-	"dispatch_saved_at":      jsonKindString,
-	"background_image":       jsonKindString,
-	"background_opacity":     jsonKindNumber,
-	"panel_blur":             jsonKindBool,
-	"crypto_salt":            jsonKindString,
+	"dispatch_saved_at":       jsonKindString,
+	"background_image":        jsonKindString,
+	"background_opacity":      jsonKindNumber,
+	"panel_blur":              jsonKindBool,
+	"crypto_salt":             jsonKindString,
 }
 
 func jsonUnmarshal(data []byte, out any) error {
@@ -64,7 +67,6 @@ func jsonUnmarshal(data []byte, out any) error {
 		target.Config = *cfg
 		target.CryptoSalt = salt
 		applyLegacyDispatchCache(&target.Config, legacy)
-		target.Config.Normalize()
 		return nil
 	case *Config:
 		cfg, legacy, _, err := decodeLooseConfigObject(data)
@@ -73,7 +75,6 @@ func jsonUnmarshal(data []byte, out any) error {
 		}
 		*target = *cfg
 		applyLegacyDispatchCache(target, legacy)
-		target.Normalize()
 		return nil
 	}
 	return json.Unmarshal(data, out)
@@ -97,6 +98,8 @@ func decodeLooseConfigObject(data []byte) (*Config, map[string]DispatchCacheEntr
 		switch key {
 		case "account":
 			cfg.Account = StringValue(value)
+		case "current_account":
+			cfg.CurrentAccount = StringValue(value)
 		case "password":
 			cfg.Password = StringValue(value)
 		case "sleep_time":
@@ -115,6 +118,8 @@ func decodeLooseConfigObject(data []byte) (*Config, map[string]DispatchCacheEntr
 			cfg.HI3UID = StringValue(value)
 		case "BILIHITOKEN":
 			cfg.BILIHITOKEN = StringValue(value)
+		case "asterisk_name":
+			cfg.AsteriskName = StringValue(value)
 		case "last_login_succ":
 			cfg.LastLoginSucc = BoolValue(value)
 		case "bh_ver":
@@ -123,6 +128,8 @@ func decodeLooseConfigObject(data []byte) (*Config, map[string]DispatchCacheEntr
 			cfg.BiliPkgVer = IntValue(value)
 		case "uname":
 			cfg.UName = StringValue(value)
+		case "accounts":
+			cfg.Accounts = decodeLooseSavedAccounts(value)
 		case "auto_clip":
 			cfg.AutoClip = BoolValue(value)
 		case "account_login":
@@ -173,6 +180,37 @@ func decodeLooseConfigObject(data []byte) (*Config, map[string]DispatchCacheEntr
 	}
 
 	return cfg, legacy, salt, nil
+}
+
+func decodeLooseSavedAccounts(value any) []SavedAccount {
+	rawEntries, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+
+	accounts := make([]SavedAccount, 0, len(rawEntries))
+	for _, rawEntry := range rawEntries {
+		entryMap, ok := rawEntry.(map[string]any)
+		if !ok {
+			continue
+		}
+		account := SavedAccount{
+			Account:       StringValue(entryMap["account"]),
+			Password:      StringValue(entryMap["password"]),
+			UID:           Int64Value(entryMap["uid"]),
+			AccessKey:     StringValue(entryMap["access_key"]),
+			UName:         StringValue(entryMap["uname"]),
+			LastLoginSucc: BoolValue(entryMap["last_login_succ"]),
+		}
+		if !normalizeSavedAccount(&account) {
+			continue
+		}
+		accounts = append(accounts, account)
+	}
+	if len(accounts) == 0 {
+		return nil
+	}
+	return accounts
 }
 
 func decodeLooseValue(raw json.RawMessage) (any, bool, error) {

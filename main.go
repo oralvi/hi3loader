@@ -19,7 +19,7 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
-var appVersion = "1.1.1"
+var appVersion = "1.1.2"
 var buildStamp = ""
 var runtimeDevStamp = ""
 

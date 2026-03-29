@@ -1,11 +1,31 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+const (
+	testNicknameUnicode = "\u4e0d\u60f3\u52a0\u5927\u73ed\u7684\u963f\u51db"
+)
+
+func readJSONMap(t *testing.T, path string) map[string]any {
+	t.Helper()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+
+	parsed := map[string]any{}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("decode config json: %v", err)
+	}
+	return parsed
+}
 
 func TestSaveLoadEncryptsSensitiveFields(t *testing.T) {
 	t.Setenv(storageSecretEnvVar, t.TempDir())
@@ -17,6 +37,7 @@ func TestSaveLoadEncryptsSensitiveFields(t *testing.T) {
 	cfg.Account = "tester"
 	cfg.Password = "secret-password"
 	cfg.AccessKey = "secret-access-key"
+	cfg.CurrentAccount = "tester"
 	cfg.BILIHITOKEN = "secret-bili-hitoken"
 	cfg.SetDispatchSnapshot("8.7.0", DispatchCacheEntry{
 		Data:          "secret-dispatch-data",
@@ -26,6 +47,16 @@ func TestSaveLoadEncryptsSensitiveFields(t *testing.T) {
 		DecodedSHA256: "abc123",
 		SavedAt:       "2026-03-19T13:00:00Z",
 	})
+	cfg.Accounts = []SavedAccount{
+		{
+			Account:       "tester-alt",
+			Password:      "secret-alt-password",
+			UID:           424242,
+			AccessKey:     "secret-alt-access-key",
+			UName:         "AltUser",
+			LastLoginSucc: true,
+		},
+	}
 
 	if err := Save(path, cfg); err != nil {
 		t.Fatalf("save config: %v", err)
@@ -41,6 +72,8 @@ func TestSaveLoadEncryptsSensitiveFields(t *testing.T) {
 		cfg.AccessKey,
 		cfg.BILIHITOKEN,
 		cfg.DispatchData,
+		cfg.Accounts[0].Password,
+		cfg.Accounts[0].AccessKey,
 	} {
 		if strings.Contains(text, secret) {
 			t.Fatalf("secret %q was written in plaintext", secret)
@@ -48,6 +81,15 @@ func TestSaveLoadEncryptsSensitiveFields(t *testing.T) {
 	}
 	if !strings.Contains(text, storageEnvelopePrefix) {
 		t.Fatalf("expected encrypted payload marker in stored config")
+	}
+	parsed := readJSONMap(t, path)
+	for _, key := range []string{"account", "password", "access_key", "uid", "uname", "last_login_succ", "account_login"} {
+		if _, ok := parsed[key]; ok {
+			t.Fatalf("expected root legacy auth field %q to be omitted from stored config", key)
+		}
+	}
+	if !strings.Contains(text, `"current_account": "tester"`) {
+		t.Fatalf("expected stored config to keep current_account")
 	}
 
 	loaded, err := LoadOrCreate(path)
@@ -71,6 +113,28 @@ func TestSaveLoadEncryptsSensitiveFields(t *testing.T) {
 	}
 	if loaded.DispatchSource != "preferred_dispatch" {
 		t.Fatalf("unexpected dispatch source: %q", loaded.DispatchSource)
+	}
+	if loaded.CurrentAccount != "tester" {
+		t.Fatalf("unexpected current account: %q", loaded.CurrentAccount)
+	}
+	if len(loaded.Accounts) != 2 {
+		t.Fatalf("expected two saved accounts, got %d", len(loaded.Accounts))
+	}
+	var foundAlt bool
+	for _, account := range loaded.Accounts {
+		if account.Account != "tester-alt" {
+			continue
+		}
+		foundAlt = true
+		if account.Password != "secret-alt-password" {
+			t.Fatalf("unexpected saved account password: %q", account.Password)
+		}
+		if account.AccessKey != "secret-alt-access-key" {
+			t.Fatalf("unexpected saved account access key: %q", account.AccessKey)
+		}
+	}
+	if !foundAlt {
+		t.Fatal("expected migrated saved account entry for tester-alt")
 	}
 }
 
@@ -151,6 +215,10 @@ func TestLegacyPlaintextConfigMigratesToEncryptedStorage(t *testing.T) {
 	}
 	if !strings.Contains(text, storageEnvelopePrefix) {
 		t.Fatalf("expected migrated config to contain encrypted payload marker")
+	}
+	parsed := readJSONMap(t, path)
+	if _, ok := parsed["account"]; ok {
+		t.Fatalf("legacy root account should not remain after migration")
 	}
 	if strings.Contains(text, "\"dispatch_cache\"") {
 		t.Fatalf("legacy dispatch_cache should not be persisted after migration")
@@ -271,5 +339,62 @@ func TestLoadConfigDropsLegacyDispatchCacheAfterRewrite(t *testing.T) {
 	}
 	if strings.Contains(text, "auto_expand_qrcode") {
 		t.Fatalf("deprecated experimental key should not remain after rewrite")
+	}
+}
+
+func TestDefaultNicknameIsPopulatedAndNormalized(t *testing.T) {
+	cfg := Default()
+	if cfg.AsteriskName != DefaultAsteriskName {
+		t.Fatalf("unexpected default nickname: %q", cfg.AsteriskName)
+	}
+
+	cfg.AsteriskName = ""
+	if !cfg.Normalize() {
+		t.Fatalf("expected normalize to restore missing nickname")
+	}
+	if cfg.AsteriskName != DefaultAsteriskName {
+		t.Fatalf("unexpected normalized nickname: %q", cfg.AsteriskName)
+	}
+}
+
+func TestSaveLoadPreservesCustomNickname(t *testing.T) {
+	t.Setenv(storageSecretEnvVar, t.TempDir())
+	t.Setenv(machineIDEnvVar, "test-machine-id")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfg := Default()
+	cfg.AsteriskName = testNicknameUnicode
+
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	loaded, err := LoadOrCreate(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if loaded.AsteriskName != testNicknameUnicode {
+		t.Fatalf("unexpected loaded nickname: %q", loaded.AsteriskName)
+	}
+}
+
+func TestNormalizeMigratesCurrentAccountIntoSavedAccounts(t *testing.T) {
+	cfg := Default()
+	cfg.Account = "tester"
+	cfg.Password = "secret"
+	cfg.UID = 1024
+	cfg.AccessKey = "access"
+	cfg.UName = "Tester"
+	cfg.LastLoginSucc = true
+
+	if !cfg.Normalize() {
+		t.Fatalf("expected normalize to migrate current account into saved accounts")
+	}
+	if len(cfg.Accounts) != 1 {
+		t.Fatalf("expected one saved account, got %d", len(cfg.Accounts))
+	}
+	if cfg.Accounts[0].Account != "tester" {
+		t.Fatalf("unexpected saved account id: %q", cfg.Accounts[0].Account)
 	}
 }

@@ -1,12 +1,12 @@
 $ErrorActionPreference = "Stop"
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$baseVersion = "1.1.1"
+$baseVersion = "1.1.2"
 $buildTime = Get-Date
 $buildStamp = $buildTime.ToString("yyMMddHHmmss")
 $displayTime = $buildTime.ToString("yyyy-MM-dd HH:mm:ss zzz")
 $titleStamp = "r$buildStamp"
-$outputName = "HI3 Loader $baseVersion"
+$outputName = "HI3 Loader"
 
 Set-Location $root
 $env:GOCACHE = Join-Path $root ".gocache-release"

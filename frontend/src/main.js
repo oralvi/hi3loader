@@ -9,17 +9,20 @@ import {
   LaunchGame,
   LogSnapshot,
   Login,
+  ManualFetchBiliHitoken,
+  ManualRefreshDispatch,
+  PauseMonitor,
   ResetQuitFlag,
   ResetBackground,
+  RecordClientMessage,
+  ResumeMonitor,
+  SaveCredentialSettings,
+  SaveFeatureSettings,
   ScanClipboard,
   ScanURL,
   ScanWindow,
-  RecordClientMessage,
-  SaveSetting,
+  SelectSavedAccount,
   UpdateBackground,
-  UpdateConfig,
-  ManualRefreshDispatch,
-  ManualFetchBiliHitoken,
 } from "../wailsjs/go/main/App";
 import { EventsOn, Quit } from "../wailsjs/runtime/runtime";
 
@@ -142,12 +145,10 @@ document.querySelector("#app").innerHTML = `
       <div class="panel settings-panel">
         <header class="settings-head">
           <div>
-            <p class="eyebrow">${t("settings.control")}</p>
             <h2>${t("settings.title")}</h2>
           </div>
           <div class="settings-top-actions">
             <button class="button button-small" id="saveBtn" type="button">${t("common.save")}</button>
-            <button class="button button-accent button-small" id="loginBtn" type="button">${t("common.login")}</button>
             <button class="button button-solid button-small settings-close-button" id="settingsCloseBtn" type="button">${t("common.close")}</button>
           </div>
         </header>
@@ -155,13 +156,26 @@ document.querySelector("#app").innerHTML = `
         <p class="settings-note" id="pathHintValue" hidden></p>
 
         <div class="settings-grid">
-          <label class="field settings-card">
-            <span>${t("settings.account")}</span>
-            <input id="accountInput" autocomplete="off" placeholder="${t("settings.accountPlaceholder")}" />
-          </label>
-          <label class="field settings-card">
-            <span>${t("settings.password")}</span>
-            <input id="passwordInput" type="password" autocomplete="new-password" placeholder="${t("settings.passwordPlaceholder")}" />
+          <label class="field settings-card settings-card-span">
+            <span>${t("settings.accounts")}</span>
+            <div class="account-picker-row">
+              <div class="locale-picker account-picker" id="accountPicker">
+                <button class="locale-trigger" id="accountTrigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-label="${t("settings.accounts")}">
+                  <span class="locale-value" id="accountValue">${t("settings.noSavedAccounts")}</span>
+                  <span class="locale-chevron" aria-hidden="true"></span>
+                </button>
+                <div class="locale-menu" id="accountMenu" role="listbox" hidden></div>
+              </div>
+              <button class="button button-solid account-icon-button account-edit-button" id="editAccountBtn" type="button" aria-label="${t("settings.editAccount")}" title="${t("settings.editAccount")}">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3 17.25V21h3.75l11-11.03-3.75-3.72L3 17.25Zm17.71-10.04a1 1 0 0 0 0-1.41l-2.5-2.5a1 1 0 0 0-1.41 0l-1.96 1.94 3.75 3.72 2.12-2.1Z"/>
+                </svg>
+              </button>
+              <button class="button button-solid account-icon-button account-add-button" id="addAccountBtn" type="button" aria-label="${t("settings.addAccount")}" title="${t("settings.addAccount")}">
+                <span aria-hidden="true">+</span>
+              </button>
+            </div>
+            <button class="account-status-button" id="accountStatusBtn" type="button">${t("auth.status.none")}</button>
           </label>
           <label class="field settings-card">
             <span>${t("settings.hi3uid")}</span>
@@ -171,9 +185,19 @@ document.querySelector("#app").innerHTML = `
             <span>${t("settings.biliHitoken")}</span>
             <input id="biliHitokenInput" autocomplete="off" placeholder="${t("settings.biliHitokenPlaceholder")}" />
           </label>
-          <label class="field settings-card settings-card-wide">
+          <label class="field settings-card">
+            <span>${t("settings.nickname")}</span>
+            <input id="asteriskNameInput" autocomplete="off" placeholder="${t("settings.nicknamePlaceholder")}" />
+          </label>
+          <label class="field settings-card">
             <span>${t("settings.locale")}</span>
-            <select id="localeSelect" aria-label="${t("settings.locale")}"></select>
+            <div class="locale-picker" id="localePicker">
+              <button class="locale-trigger" id="localeTrigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-label="${t("settings.locale")}">
+                <span class="locale-value" id="localeValue"></span>
+                <span class="locale-chevron" aria-hidden="true"></span>
+              </button>
+              <div class="locale-menu" id="localeMenu" role="listbox" hidden></div>
+            </div>
           </label>
         </div>
 
@@ -192,7 +216,7 @@ document.querySelector("#app").innerHTML = `
           <section class="settings-section">
             <div class="section-labels">
               <span class="section-title">${t("settings.background")}</span>
-              <small class="section-hint" id="backgroundStatusValue">${t("settings.backgroundUnset")}</small>
+              <small class="section-hint section-status-pill" id="backgroundStatusValue" data-tone="warn">${t("settings.backgroundUnset")}</small>
             </div>
             <div class="background-actions">
               <button class="button button-solid path-button" id="browseBackgroundBtn" type="button">${t("common.browse")}</button>
@@ -203,33 +227,39 @@ document.querySelector("#app").innerHTML = `
           <section class="settings-section">
             <div class="section-labels">
               <span class="section-title">${t("settings.uiOpacity")}</span>
-              <small class="section-hint"><strong id="backgroundOpacityValue">35%</strong></small>
+              <small class="section-hint section-value-pill"><strong id="backgroundOpacityValue">35%</strong></small>
             </div>
-            <input id="backgroundOpacityInput" type="range" min="0" max="100" step="1" value="35" />
+            <div class="opacity-control">
+              <input id="backgroundOpacityInput" type="range" min="0" max="100" step="1" value="19" />
+            </div>
           </section>
         </div>
 
         <div class="toggle-grid">
           <label class="toggle">
             <input id="panelBlurInput" type="checkbox" />
+            <span class="toggle-control" aria-hidden="true"></span>
             <span class="toggle-copy">
               <strong>${t("settings.blurTitle")}</strong>
             </span>
           </label>
           <label class="toggle">
             <input id="clipCheckInput" type="checkbox" />
+            <span class="toggle-control" aria-hidden="true"></span>
             <span class="toggle-copy">
               <strong>${t("settings.clipboardTitle")}</strong>
             </span>
           </label>
           <label class="toggle">
             <input id="autoClipInput" type="checkbox" />
+            <span class="toggle-control" aria-hidden="true"></span>
             <span class="toggle-copy">
               <strong>${t("settings.windowTitle")}</strong>
             </span>
           </label>
           <label class="toggle">
             <input id="autoCloseInput" type="checkbox" />
+            <span class="toggle-control" aria-hidden="true"></span>
             <span class="toggle-copy">
               <strong>${t("settings.exitTitle")}</strong>
             </span>
@@ -249,6 +279,32 @@ document.querySelector("#app").innerHTML = `
         </header>
         <p class="captcha-copy" id="captchaCopy">${t("captcha.copy")}</p>
         <iframe class="captcha-frame" id="captchaFrame" title="${t("captcha.frameTitle")}"></iframe>
+      </article>
+    </section>
+
+    <section class="auth-overlay" id="authOverlay" hidden>
+      <article class="auth-modal panel">
+        <header class="captcha-head auth-head">
+          <div>
+            <h2 id="authTitle">${t("auth.title")}</h2>
+          </div>
+          <button class="button button-solid captcha-close" id="authCloseBtn" type="button">${t("common.close")}</button>
+        </header>
+        <p class="auth-copy" id="authCopy">${t("auth.copy")}</p>
+        <div class="settings-grid auth-grid">
+          <label class="field settings-card">
+            <span>${t("settings.account")}</span>
+            <input id="loginAccountInput" autocomplete="off" placeholder="${t("settings.accountPlaceholder")}" />
+          </label>
+          <label class="field settings-card">
+            <span>${t("settings.password")}</span>
+            <input id="loginPasswordInput" type="password" autocomplete="new-password" placeholder="${t("settings.passwordPlaceholder")}" />
+          </label>
+        </div>
+        <div class="auth-actions">
+          <button class="button button-solid" id="authCancelBtn" type="button">${t("common.close")}</button>
+          <button class="button button-accent" id="authSubmitBtn" type="button">${t("common.login")}</button>
+        </div>
       </article>
     </section>
   </main>
@@ -277,11 +333,20 @@ const elements = {
   versionPill: document.getElementById("versionPill"),
   actionValue: document.getElementById("actionValue"),
   errorValue: document.getElementById("errorValue"),
-  accountInput: document.getElementById("accountInput"),
-  passwordInput: document.getElementById("passwordInput"),
+  accountPicker: document.getElementById("accountPicker"),
+  accountTrigger: document.getElementById("accountTrigger"),
+  accountValue: document.getElementById("accountValue"),
+  accountMenu: document.getElementById("accountMenu"),
+  editAccountBtn: document.getElementById("editAccountBtn"),
+  addAccountBtn: document.getElementById("addAccountBtn"),
+  accountStatusBtn: document.getElementById("accountStatusBtn"),
   hi3uidInput: document.getElementById("hi3uidInput"),
   biliHitokenInput: document.getElementById("biliHitokenInput"),
-  localeSelect: document.getElementById("localeSelect"),
+  asteriskNameInput: document.getElementById("asteriskNameInput"),
+  localePicker: document.getElementById("localePicker"),
+  localeTrigger: document.getElementById("localeTrigger"),
+  localeValue: document.getElementById("localeValue"),
+  localeMenu: document.getElementById("localeMenu"),
   gamePathInput: document.getElementById("gamePathInput"),
   backgroundOpacityInput: document.getElementById("backgroundOpacityInput"),
   backgroundOpacityValue: document.getElementById("backgroundOpacityValue"),
@@ -303,7 +368,6 @@ const elements = {
   browseBackgroundBtn: document.getElementById("browseBackgroundBtn"),
   resetBackgroundBtn: document.getElementById("resetBackgroundBtn"),
   saveBtn: document.getElementById("saveBtn"),
-  loginBtn: document.getElementById("loginBtn"),
   scanUrlBtn: document.getElementById("scanUrlBtn"),
   scanClipboardBtn: document.getElementById("scanClipboardBtn"),
   scanWindowBtn: document.getElementById("scanWindowBtn"),
@@ -313,6 +377,14 @@ const elements = {
   captchaFrame: document.getElementById("captchaFrame"),
   captchaCopy: document.getElementById("captchaCopy"),
   captchaCloseBtn: document.getElementById("captchaCloseBtn"),
+  authOverlay: document.getElementById("authOverlay"),
+  authTitle: document.getElementById("authTitle"),
+  authCopy: document.getElementById("authCopy"),
+  authCloseBtn: document.getElementById("authCloseBtn"),
+  authCancelBtn: document.getElementById("authCancelBtn"),
+  authSubmitBtn: document.getElementById("authSubmitBtn"),
+  loginAccountInput: document.getElementById("loginAccountInput"),
+  loginPasswordInput: document.getElementById("loginPasswordInput"),
 };
 
 const maxRenderedLogs = 300;
@@ -322,6 +394,13 @@ let appBootstrapped = false;
 let latestConfigView = {};
 let latestState = null;
 let lastScanHintToastKey = "";
+let monitorPauseRequested = false;
+let authSheetMode = "existing";
+let authSheetContext = {
+  baselineAccount: "",
+  currentLoggedIn: false,
+  hasStoredPassword: false,
+};
 const seenLogKeys = new Set();
 const autofillGuardNames = Object.freeze({
   account: "ctl_contact_ref",
@@ -389,17 +468,17 @@ function installAutofillGuard(input, nameHint, { inputMode = "" } = {}) {
   });
 }
 
-installAutofillGuard(elements.accountInput, autofillGuardNames.account);
-installAutofillGuard(elements.passwordInput, autofillGuardNames.password);
+installAutofillGuard(elements.loginAccountInput, autofillGuardNames.account);
+installAutofillGuard(elements.loginPasswordInput, autofillGuardNames.password);
 installAutofillGuard(elements.hi3uidInput, autofillGuardNames.hi3uid, { inputMode: "numeric" });
 installAutofillGuard(elements.biliHitokenInput, autofillGuardNames.biliHitoken);
 
 const secretFieldMeta = {
   password: {
-    input: elements.passwordInput,
+    input: elements.loginPasswordInput,
     hasKey: "has_password",
     maskKey: "masked_password",
-    defaultPlaceholder: elements.passwordInput.getAttribute("placeholder") || "",
+    defaultPlaceholder: elements.loginPasswordInput.getAttribute("placeholder") || "",
   },
   hi3uid: {
     input: elements.hi3uidInput,
@@ -584,6 +663,10 @@ function syncSecretInput(key, cfg) {
   if (!meta) {
     return;
   }
+  if (key === "password") {
+    syncAuthPasswordPlaceholder(cfg);
+    return;
+  }
   const { input, hasKey, maskKey, defaultPlaceholder } = meta;
   const hasValue = Boolean(cfg?.[hasKey]);
   const maskedValue = String(cfg?.[maskKey] ?? "").trim();
@@ -597,10 +680,64 @@ function syncSecretInput(key, cfg) {
   input.value = "";
 }
 
+function syncAuthPasswordPlaceholder(cfg = latestConfigView) {
+  const meta = secretFieldMeta.password;
+  const currentAccount = String(cfg?.account ?? "").trim();
+  const draftAccount = String(elements.loginAccountInput.value ?? "").trim();
+  const sameAccount =
+    currentAccount !== "" &&
+    draftAccount !== "" &&
+    draftAccount.toLowerCase() === currentAccount.toLowerCase();
+  const canShowStoredPassword = authSheetMode !== "new" && sameAccount && Boolean(cfg?.[meta.hasKey]);
+
+  elements.loginPasswordInput.placeholder = canShowStoredPassword
+    ? String(cfg?.[meta.maskKey] ?? "").trim() || meta.defaultPlaceholder
+    : meta.defaultPlaceholder;
+  elements.loginPasswordInput.dataset.configured = canShowStoredPassword ? "true" : "false";
+
+  if (secretFieldDirty.password || document.activeElement === elements.loginPasswordInput) {
+    return;
+  }
+  elements.loginPasswordInput.value = "";
+}
+
+function refreshAuthSubmitState(cfg = latestConfigView) {
+  const draftAccount = String(elements.loginAccountInput.value ?? "").trim();
+  const draftPassword = String(elements.loginPasswordInput.value ?? "").trim();
+  const baselineAccount = String(authSheetContext.baselineAccount ?? "").trim();
+  const sameAccount =
+    baselineAccount !== "" &&
+    draftAccount !== "" &&
+    draftAccount.toLowerCase() === baselineAccount.toLowerCase();
+  const accountChanged = draftAccount !== baselineAccount;
+  const passwordChanged = draftPassword !== "";
+  const canReuseStoredPassword = sameAccount && authSheetContext.hasStoredPassword;
+
+  if (authSheetMode === "existing" && authSheetContext.currentLoggedIn && !accountChanged && !passwordChanged) {
+    elements.authSubmitBtn.disabled = true;
+    elements.authSubmitBtn.textContent = t("auth.status.loggedIn");
+    return;
+  }
+
+  const canSubmit = draftAccount !== "" && (passwordChanged || canReuseStoredPassword);
+  elements.authSubmitBtn.disabled = !canSubmit;
+  elements.authSubmitBtn.textContent = t("common.login");
+}
+
 function syncRangeValue(input, value) {
   if (document.activeElement !== input) {
     input.value = String(value);
   }
+}
+
+function sliderToOpacityPercent(value) {
+  const normalized = Math.max(0, Math.min(100, Number(value || 0)));
+  return Math.round(20 + normalized * 0.8);
+}
+
+function opacityPercentToSlider(percent) {
+  const normalized = Math.max(20, Math.min(100, Number(percent || 20)));
+  return Math.round((normalized - 20) / 0.8);
 }
 
 function hasSecretValue(key, cfg = latestConfigView) {
@@ -619,6 +756,78 @@ function hasCachedSessionState(cfg) {
   return Boolean((cfg.account_login ?? cfg.accountLogin) || (cfg.last_login_succ && cfg.has_access_key));
 }
 
+function describeAccountStatus(state, cfg) {
+  const account = String(cfg?.account ?? "").trim();
+  if (!account) {
+    return {
+      text: t("auth.status.none"),
+      tone: "neutral",
+      mode: "new",
+    };
+  }
+
+  if (state?.captchaPending) {
+    return {
+      text: t("auth.status.current", { status: t("auth.status.captcha") }),
+      tone: "warn",
+      mode: "existing",
+    };
+  }
+
+  if (Boolean(cfg?.account_login ?? cfg?.accountLogin)) {
+    return {
+      text: t("auth.status.current", { status: t("auth.status.loggedIn") }),
+      tone: "ok",
+      mode: "existing",
+    };
+  }
+
+  if (Boolean(cfg?.has_access_key)) {
+    return {
+      text: t("auth.status.current", { status: t("auth.status.cached") }),
+      tone: "warn",
+      mode: "existing",
+    };
+  }
+
+  if (Boolean(cfg?.has_password)) {
+    return {
+      text: t("auth.status.current", { status: t("auth.status.relogin") }),
+      tone: "error",
+      mode: "existing",
+    };
+  }
+
+  return {
+    text: t("auth.status.current", { status: t("auth.status.passwordRequired") }),
+    tone: "error",
+    mode: "existing",
+  };
+}
+
+function applyAccountStatus(state, cfg) {
+  const status = describeAccountStatus(state, cfg);
+  elements.accountStatusBtn.textContent = status.text;
+  elements.accountStatusBtn.dataset.tone = status.tone;
+  elements.accountStatusBtn.dataset.mode = status.mode;
+}
+
+async function syncMonitorPauseState() {
+  const shouldPause = !elements.authOverlay.hidden || !elements.captchaOverlay.hidden;
+  if (shouldPause === monitorPauseRequested) {
+    return;
+  }
+  monitorPauseRequested = shouldPause;
+  try {
+    if (shouldPause) {
+      await PauseMonitor();
+    } else {
+      await ResumeMonitor();
+    }
+  } catch (_) {
+  }
+}
+
 function formatLocaleLabel(locale) {
   const key = `locale.name.${locale}`;
   const translated = t(key);
@@ -628,17 +837,153 @@ function formatLocaleLabel(locale) {
   return locale;
 }
 
+function setLocaleTriggerLabel(locale) {
+  elements.localeValue.textContent = formatLocaleLabel(locale);
+  elements.localeTrigger.dataset.locale = locale;
+}
+
+function setAccountTriggerLabel(cfg = latestConfigView) {
+  const accounts = Array.isArray(cfg?.saved_accounts) ? cfg.saved_accounts : [];
+  const currentAccount = String(cfg?.account ?? "").trim();
+  const selected = accounts.find((entry) => String(entry?.account ?? "").trim() === currentAccount);
+  elements.accountValue.textContent = selected?.display_name || currentAccount || t("settings.noSavedAccounts");
+}
+
+function closeLocaleMenu() {
+  elements.localeMenu.hidden = true;
+  elements.localeTrigger.setAttribute("aria-expanded", "false");
+  elements.localePicker.dataset.open = "false";
+}
+
+function openLocaleMenu() {
+  elements.localeMenu.hidden = false;
+  elements.localeTrigger.setAttribute("aria-expanded", "true");
+  elements.localePicker.dataset.open = "true";
+}
+
+function closeAccountMenu() {
+  elements.accountMenu.hidden = true;
+  elements.accountTrigger.setAttribute("aria-expanded", "false");
+  elements.accountPicker.dataset.open = "false";
+}
+
+function openAccountMenu() {
+  elements.accountMenu.hidden = false;
+  elements.accountTrigger.setAttribute("aria-expanded", "true");
+  elements.accountPicker.dataset.open = "true";
+}
+
+function openAuthSheet(mode = "existing") {
+  const cfg = latestConfigView || {};
+  const currentAccount = String(cfg.account ?? "").trim();
+  authSheetMode = mode;
+  authSheetContext = {
+    baselineAccount: mode === "new" ? "" : currentAccount,
+    currentLoggedIn: mode !== "new" && Boolean(cfg.account_login ?? cfg.accountLogin),
+    hasStoredPassword: mode !== "new" && Boolean(cfg.has_password),
+  };
+  elements.authTitle.textContent = mode === "new" ? t("auth.titleAdd") : t("auth.title");
+  elements.authCopy.textContent = mode === "new" ? t("auth.copyAdd") : t("auth.copy");
+  elements.loginAccountInput.value = mode === "new" ? "" : currentAccount;
+  elements.loginPasswordInput.value = "";
+  markSecretFieldClean("password");
+  syncAuthPasswordPlaceholder(cfg);
+  refreshAuthSubmitState(cfg);
+  elements.authOverlay.hidden = false;
+  window.setTimeout(() => {
+    if (mode === "new" || !currentAccount) {
+      elements.loginAccountInput.focus();
+      return;
+    }
+    elements.loginPasswordInput.focus();
+  }, 0);
+  void syncMonitorPauseState();
+}
+
+function closeAuthSheet() {
+  elements.authOverlay.hidden = true;
+  authSheetMode = "existing";
+  authSheetContext = {
+    baselineAccount: "",
+    currentLoggedIn: false,
+    hasStoredPassword: false,
+  };
+  elements.loginPasswordInput.value = "";
+  markSecretFieldClean("password");
+  syncAuthPasswordPlaceholder(latestConfigView);
+  refreshAuthSubmitState(latestConfigView);
+  void syncMonitorPauseState();
+}
+
 function populateLocaleOptions() {
   const locales = listLocales();
   const currentLocale = getLocale();
-  elements.localeSelect.innerHTML = "";
+  elements.localeMenu.innerHTML = "";
+  setLocaleTriggerLabel(currentLocale);
 
   locales.forEach((locale) => {
-    const option = document.createElement("option");
-    option.value = locale;
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "locale-option";
+    option.dataset.locale = locale;
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", locale === currentLocale ? "true" : "false");
     option.textContent = formatLocaleLabel(locale);
-    option.selected = locale === currentLocale;
-    elements.localeSelect.append(option);
+    option.addEventListener("click", async () => {
+      closeLocaleMenu();
+      if (!locale || locale === getLocale()) {
+        return;
+      }
+      const persisted = await persistSettings({ showToast: false, closeSheet: false });
+      if (!persisted) {
+        return;
+      }
+      applyLocale(locale);
+    });
+    elements.localeMenu.append(option);
+  });
+}
+
+function populateAccountOptions(cfg = latestConfigView) {
+  const accounts = Array.isArray(cfg?.saved_accounts) ? cfg.saved_accounts : [];
+  const currentAccount = String(cfg?.account ?? "").trim();
+  elements.accountMenu.innerHTML = "";
+  setAccountTriggerLabel(cfg);
+  elements.accountTrigger.disabled = accounts.length === 0;
+  elements.editAccountBtn.disabled = !currentAccount;
+
+  if (!accounts.length) {
+    closeAccountMenu();
+    return;
+  }
+
+  accounts.forEach((entry) => {
+    const account = String(entry?.account ?? "").trim();
+    if (!account) {
+      return;
+    }
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "locale-option";
+    option.dataset.account = account;
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", account === currentAccount ? "true" : "false");
+    option.textContent = String(entry?.display_name ?? account);
+    option.addEventListener("click", async () => {
+      closeAccountMenu();
+      if (account === currentAccount) {
+        return;
+      }
+      await PauseMonitor().catch(() => {});
+      const state = await runTask(() => SelectSavedAccount(account), null, "soft");
+      await ResumeMonitor().catch(() => {});
+      if (!state) {
+        return;
+      }
+      renderState(state);
+      showPayload({ account: entry?.display_name ?? account }, "neutral");
+    });
+    elements.accountMenu.append(option);
   });
 }
 
@@ -656,7 +1001,7 @@ async function refreshBackground(forceURL = "") {
 }
 
 function applySurfaceOpacity(percent) {
-  const clampedPercent = Math.max(0, Math.min(100, Number(percent || 0)));
+  const clampedPercent = Math.max(20, Math.min(100, Number(percent || 20)));
   const alpha = clampedPercent / 100;
   const root = document.documentElement;
   root.style.setProperty("--panel-alpha", alpha.toFixed(3));
@@ -668,11 +1013,12 @@ function applySurfaceOpacity(percent) {
   root.style.setProperty("--response-alpha", Math.max(0, alpha * 0.92).toFixed(3));
 }
 
-function previewOpacity(percent) {
-  const normalized = Math.max(0, Math.min(100, Number(percent || 0)));
+function previewOpacity(sliderValue) {
+  const normalized = Math.max(0, Math.min(100, Number(sliderValue || 0)));
+  const opacityPercent = sliderToOpacityPercent(normalized);
   elements.backgroundOpacityInput.value = String(normalized);
-  elements.backgroundOpacityValue.textContent = `${normalized}%`;
-  applySurfaceOpacity(normalized);
+  elements.backgroundOpacityValue.textContent = `${opacityPercent}%`;
+  applySurfaceOpacity(opacityPercent);
 }
 
 function applyBlurEnabled(enabled) {
@@ -732,19 +1078,19 @@ function formatDispatchStatus(state, cfg) {
 }
 
 function formatSessionStatus(state, cfg) {
-  const account = String(cfg.account ?? "").trim();
-  const hasPassword = Boolean(cfg.has_password) || Boolean(String(elements.passwordInput?.value ?? "").trim());
-  const hasCredentials = Boolean(account && hasPassword);
   const hasCachedSession = hasCachedSessionState(cfg);
+  const account = String(cfg.account ?? "").trim();
+  const hasPassword = Boolean(cfg.has_password);
+  const hasCredentials = Boolean(account && hasPassword);
 
   if (state.captchaPending) {
     return { tone: "warn", text: t("status.verificationRequired") };
   }
-  if (!hasCredentials) {
-    return { tone: "error", text: t("status.notLoggedIn") };
-  }
   if (hasCachedSession) {
     return { tone: "ok", text: t("status.cached") };
+  }
+  if (!hasCredentials) {
+    return { tone: "error", text: t("status.notLoggedIn") };
   }
   return { tone: "error", text: t("status.waitingLogin") };
 }
@@ -757,6 +1103,8 @@ function openSettings() {
 function closeSettings() {
   elements.settingsBackdrop.hidden = true;
   elements.settingsSheet.hidden = true;
+  closeLocaleMenu();
+  closeAccountMenu();
 }
 
 function syncCaptcha(state) {
@@ -771,6 +1119,7 @@ function syncCaptcha(state) {
       elements.captchaFrame.src = url;
     }
     elements.captchaOverlay.hidden = captchaDismissed;
+    void syncMonitorPauseState();
     return;
   }
 
@@ -780,6 +1129,7 @@ function syncCaptcha(state) {
     activeCaptchaURL = "";
     elements.captchaFrame.src = "about:blank";
   }
+  void syncMonitorPauseState();
 }
 
 function renderState(state) {
@@ -792,13 +1142,12 @@ function renderState(state) {
   const gamePath = cfg.game_path ?? cfg.gamePath ?? "";
   const hasBackgroundImage = Boolean(cfg.has_background_image ?? cfg.hasBackgroundImage);
   const backgroundOpacity = Math.round(
-    Math.max(0, Math.min(1, Number(cfg.background_opacity ?? cfg.backgroundOpacity ?? 0.35))) * 100,
+    Math.max(20, Math.min(100, Number(cfg.background_opacity ?? cfg.backgroundOpacity ?? 0.35) * 100)),
   );
   const panelBlur = cfg.panel_blur ?? cfg.panelBlur ?? true;
   const session = formatSessionStatus(state, cfg);
   const dispatch = formatDispatchStatus(state, cfg);
   const versionText = String(cfg.bh_ver ?? cfg.bhVer ?? "").trim();
-  const hasCachedAccessKey = hasCachedSessionState(cfg);
   const gameTone = state.gamePathValid ? "ok" : "warn";
   const gameText = state.gamePathValid
     ? t("status.gameConfigured", { version: versionText }).trim()
@@ -824,7 +1173,7 @@ function renderState(state) {
   elements.pathHintValue.textContent = pathHintText;
 
   const hintCode = String(state?.lastErrorMessage?.code ?? "").trim();
-  if (windowScanHintCodes.has(hintCode)) {
+  if (windowScanHintCodes.has(hintCode) && elements.authOverlay.hidden && elements.captchaOverlay.hidden) {
     const hintText = translateMessage(state.lastErrorMessage, state.lastError || "");
     const toastKey = `${hintCode}|${hintText}`;
     if (hintText && toastKey !== lastScanHintToastKey) {
@@ -835,14 +1184,15 @@ function renderState(state) {
     lastScanHintToastKey = "";
   }
 
-  syncInputValue(elements.accountInput, cfg.account);
   syncSecretInput("password", cfg);
   syncSecretInput("hi3uid", cfg);
   syncSecretInput("biliHitoken", cfg);
+  syncInputValue(elements.asteriskNameInput, cfg.asterisk_name ?? cfg.asteriskName ?? "");
   syncInputValue(elements.gamePathInput, gamePath);
-  syncRangeValue(elements.backgroundOpacityInput, backgroundOpacity);
-  previewOpacity(backgroundOpacity);
+  syncRangeValue(elements.backgroundOpacityInput, opacityPercentToSlider(backgroundOpacity));
+  previewOpacity(opacityPercentToSlider(backgroundOpacity));
   elements.backgroundStatusValue.textContent = hasBackgroundImage ? t("settings.backgroundSet") : t("settings.backgroundUnset");
+  elements.backgroundStatusValue.dataset.tone = hasBackgroundImage ? "ok" : "warn";
   elements.resetBackgroundBtn.disabled = !hasBackgroundImage;
   const blurEnabled = Boolean(panelBlur);
   if (elements.settingsSheet.hidden) {
@@ -860,13 +1210,9 @@ function renderState(state) {
   }
   elements.launchGameBtn.disabled = !state.gamePathValid;
   refreshDraftActionState(cfg);
-  elements.loginBtn.disabled = hasCachedAccessKey;
-  elements.loginBtn.textContent = hasCachedAccessKey ? t("status.loggedIn") : t("common.login");
-  elements.loginBtn.classList.toggle("button-success", hasCachedAccessKey);
-  elements.loginBtn.classList.toggle("button-accent", !hasCachedAccessKey);
-  if (elements.localeSelect.value !== getLocale()) {
-    elements.localeSelect.value = getLocale();
-  }
+  populateAccountOptions(cfg);
+  applyAccountStatus(state, cfg);
+  setLocaleTriggerLabel(getLocale());
 
   syncCaptcha(state);
 }
@@ -879,6 +1225,115 @@ function formatError(error) {
     return sanitizeText(error.message);
   }
   return sanitizeText(JSON.stringify(error, null, 2));
+}
+
+async function persistSettings({ showToast = true, closeSheet = false } = {}) {
+  const secretKeysToReset = [];
+  const currentCfg = latestConfigView || {};
+  const currentNickname = String(currentCfg.asterisk_name ?? currentCfg.asteriskName ?? "").trim();
+  const nextNickname = String(elements.asteriskNameInput.value ?? "").trim();
+  const currentHI3UID = String(currentCfg.hi3uid ?? currentCfg.HI3UID ?? "").trim();
+  const currentBiliHitoken = String(currentCfg.biliHitoken ?? currentCfg.BILIHITOKEN ?? "").trim();
+  const nextHI3UID = secretFieldDirty.hi3uid ? String(elements.hi3uidInput.value || "").trim() : currentHI3UID;
+  const nextBiliHitoken = secretFieldDirty.biliHitoken ? String(elements.biliHitokenInput.value || "").trim() : currentBiliHitoken;
+  const needsCredentialSave =
+    nextNickname !== currentNickname ||
+    secretFieldDirty.hi3uid ||
+    secretFieldDirty.biliHitoken;
+
+  if (secretFieldDirty.hi3uid) {
+    secretKeysToReset.push("hi3uid");
+  }
+  if (secretFieldDirty.biliHitoken) {
+    secretKeysToReset.push("biliHitoken");
+  }
+
+  const nextClipCheck = elements.clipCheckInput.checked;
+  const nextAutoClose = elements.autoCloseInput.checked;
+  const nextAutoClip = elements.autoClipInput.checked;
+  const nextPanelBlur = elements.panelBlurInput.checked;
+  const nextGamePath = elements.gamePathInput.value || "";
+  const currentClipCheck = Boolean(currentCfg.clip_check ?? currentCfg.clipCheck);
+  const currentAutoClose = Boolean(currentCfg.auto_close ?? currentCfg.autoClose);
+  const currentAutoClip = Boolean(currentCfg.auto_clip ?? currentCfg.autoClip);
+  const currentPanelBlur = Boolean(currentCfg.panel_blur ?? currentCfg.panelBlur ?? true);
+  const currentGamePath = String(currentCfg.game_path ?? currentCfg.gamePath ?? "");
+  const nextOpacity = sliderToOpacityPercent(elements.backgroundOpacityInput.value) / 100;
+  const currentOpacity = Number(currentCfg.background_opacity ?? currentCfg.backgroundOpacity ?? 0.35);
+  const needsFeatureSave =
+    nextGamePath !== currentGamePath ||
+    nextClipCheck !== currentClipCheck ||
+    nextAutoClose !== currentAutoClose ||
+    nextAutoClip !== currentAutoClip ||
+    nextPanelBlur !== currentPanelBlur ||
+    Math.abs(nextOpacity - currentOpacity) > 0.0001;
+
+  if (!needsCredentialSave && !needsFeatureSave) {
+    if (closeSheet) {
+      closeSettings();
+    }
+    return true;
+  }
+
+  let state = null;
+  if (needsCredentialSave) {
+    const savedState = await runTask(
+      () =>
+        SaveCredentialSettings(
+          nextHI3UID,
+          secretFieldDirty.hi3uid,
+          nextBiliHitoken,
+          secretFieldDirty.biliHitoken,
+          nextNickname,
+        ),
+      null,
+      "soft",
+    );
+    if (!savedState) {
+      return false;
+    }
+    state = savedState;
+  }
+
+  if (needsFeatureSave) {
+    state = await runTask(
+      () => SaveFeatureSettings(nextGamePath, nextClipCheck, nextAutoClose, nextAutoClip, nextPanelBlur, nextOpacity),
+      showToast ? () => ({ saved: true, gamePath: nextGamePath || null }) : null,
+    );
+    if (!state) {
+      return false;
+    }
+  }
+
+  if (state) {
+    renderState(state);
+    if (needsFeatureSave) {
+      await refreshBackground();
+    }
+  }
+
+  secretKeysToReset.forEach((key) => markSecretFieldClean(key));
+  elements.hi3uidInput.value = "";
+  elements.biliHitokenInput.value = "";
+
+  if (showToast) {
+    const cfg = (state?.config) || latestConfigView || {};
+    showPayload(
+      {
+        saved: true,
+        hi3uid: cfg.masked_hi3uid || "cleared",
+        biliHitoken: cfg.masked_bilihitoken || "cleared",
+        nickname: cfg.asterisk_name ?? cfg.asteriskName ?? null,
+        gamePath: cfg.game_path ?? cfg.gamePath ?? null,
+      },
+      "neutral",
+    );
+  }
+
+  if (closeSheet) {
+    closeSettings();
+  }
+  return true;
 }
 
 async function runTask(task, successPayload, tone = "ok") {
@@ -895,16 +1350,34 @@ async function runTask(task, successPayload, tone = "ok") {
 }
 
 elements.settingsBtn.addEventListener("click", () => openSettings());
-elements.settingsCloseBtn.addEventListener("click", () => closeSettings());
-elements.settingsBackdrop.addEventListener("click", () => closeSettings());
-elements.localeSelect.addEventListener("change", () => {
-  const selectedLocale = elements.localeSelect.value;
-  if (!selectedLocale || selectedLocale === getLocale()) {
-    return;
-  }
-  applyLocale(selectedLocale);
+elements.settingsCloseBtn.addEventListener("click", async () => {
+  await persistSettings({ showToast: false, closeSheet: true });
 });
-elements.passwordInput.addEventListener("input", () => markSecretFieldDirty("password"));
+elements.settingsBackdrop.addEventListener("click", async () => {
+  await persistSettings({ showToast: false, closeSheet: true });
+});
+elements.localeTrigger.addEventListener("click", () => {
+  if (elements.localeMenu.hidden) {
+    openLocaleMenu();
+  } else {
+    closeLocaleMenu();
+  }
+});
+elements.accountTrigger.addEventListener("click", () => {
+  if (elements.accountMenu.hidden) {
+    openAccountMenu();
+  } else {
+    closeAccountMenu();
+  }
+});
+document.addEventListener("pointerdown", (event) => {
+  if (!elements.localeMenu.hidden && !elements.localePicker.contains(event.target)) {
+    closeLocaleMenu();
+  }
+  if (!elements.accountMenu.hidden && !elements.accountPicker.contains(event.target)) {
+    closeAccountMenu();
+  }
+});
 elements.hi3uidInput.addEventListener("input", () => {
   markSecretFieldDirty("hi3uid");
   refreshDraftActionState();
@@ -925,12 +1398,13 @@ elements.browseGamePathBtn.addEventListener("click", async () => {
   }
   const state = await runTask(
     () =>
-      UpdateConfig(
+      SaveFeatureSettings(
         selected,
         elements.clipCheckInput.checked,
         elements.autoCloseInput.checked,
         elements.autoClipInput.checked,
         elements.panelBlurInput.checked,
+        sliderToOpacityPercent(elements.backgroundOpacityInput.value) / 100,
       ),
     () => ({ saved: true, gamePath: selected }),
     "soft",
@@ -953,7 +1427,7 @@ elements.browseBackgroundBtn.addEventListener("click", async () => {
     () =>
       UpdateBackground(
         selected,
-        Number(elements.backgroundOpacityInput.value || "35") / 100,
+        sliderToOpacityPercent(elements.backgroundOpacityInput.value) / 100,
       ),
     () => ({ background: "updated" }),
     "soft",
@@ -970,9 +1444,18 @@ elements.backgroundOpacityInput.addEventListener("input", () => {
 });
 
 elements.backgroundOpacityInput.addEventListener("change", async () => {
-  const percent = Number(elements.backgroundOpacityInput.value || "35");
+  const percent = sliderToOpacityPercent(elements.backgroundOpacityInput.value);
+  const cfg = latestConfigView || {};
   const state = await runTask(
-    () => UpdateBackground("", percent / 100),
+    () =>
+      SaveFeatureSettings(
+        String(cfg.game_path ?? cfg.gamePath ?? ""),
+        Boolean(cfg.clip_check ?? cfg.clipCheck),
+        Boolean(cfg.auto_close ?? cfg.autoClose),
+        Boolean(cfg.auto_clip ?? cfg.autoClip),
+        Boolean(cfg.panel_blur ?? cfg.panelBlur ?? true),
+        percent / 100,
+      ),
     () => ({ opacity: `${percent}%` }),
     "soft",
   );
@@ -997,77 +1480,79 @@ elements.resetBackgroundBtn.addEventListener("click", async () => {
 });
 
 elements.saveBtn.addEventListener("click", async () => {
-  const settingsToSave = [["account", elements.accountInput.value || ""]];
-  const secretKeysToReset = [];
-
-  if (secretFieldDirty.password) {
-    settingsToSave.push(["password", elements.passwordInput.value || ""]);
-    secretKeysToReset.push("password");
-  }
-  if (secretFieldDirty.hi3uid) {
-    settingsToSave.push(["HI3UID", elements.hi3uidInput.value || ""]);
-    secretKeysToReset.push("hi3uid");
-  }
-  if (secretFieldDirty.biliHitoken) {
-    settingsToSave.push(["BILIHITOKEN", elements.biliHitokenInput.value || ""]);
-    secretKeysToReset.push("biliHitoken");
-  }
-
-  for (const [key, value] of settingsToSave) {
-    const savedState = await runTask(() => SaveSetting(key, value), null, "soft");
-    if (!savedState) {
-      return;
-    }
-  }
-
-  const state = await runTask(
-    () =>
-      UpdateConfig(
-        elements.gamePathInput.value,
-        elements.clipCheckInput.checked,
-        elements.autoCloseInput.checked,
-        elements.autoClipInput.checked,
-        elements.panelBlurInput.checked,
-      ),
-    () => ({ saved: true, gamePath: elements.gamePathInput.value || null }),
-  );
-  if (!state) {
-    return;
-  }
-  secretKeysToReset.forEach((key) => markSecretFieldClean(key));
-  elements.passwordInput.value = "";
-  elements.hi3uidInput.value = "";
-  elements.biliHitokenInput.value = "";
-  renderState(state);
-  const cfg = state.config || {};
-  showPayload(
-    {
-      saved: true,
-      account: String(cfg.account ?? "").trim() ? "configured" : "cleared",
-      password: cfg.has_password ? "configured" : "cleared",
-      hi3uid: cfg.masked_hi3uid || "cleared",
-      biliHitoken: cfg.masked_bilihitoken || "cleared",
-      gamePath: cfg.game_path ?? cfg.gamePath ?? null,
-    },
-    "neutral",
-  );
+  await persistSettings({ showToast: true, closeSheet: false });
 });
 
-elements.loginBtn.addEventListener("click", async () => {
+elements.accountStatusBtn.addEventListener("click", () => {
+  const mode = elements.accountStatusBtn.dataset.mode === "new" ? "new" : "existing";
+  openAuthSheet(mode);
+});
+elements.addAccountBtn.addEventListener("click", () => {
+  openAuthSheet("new");
+});
+elements.editAccountBtn.addEventListener("click", () => {
+  openAuthSheet("existing");
+});
+elements.authCloseBtn.addEventListener("click", () => {
+  closeAuthSheet();
+});
+elements.authCancelBtn.addEventListener("click", () => {
+  closeAuthSheet();
+});
+elements.authOverlay.addEventListener("click", (event) => {
+  if (event.target === elements.authOverlay) {
+    closeAuthSheet();
+  }
+});
+elements.loginAccountInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    elements.authSubmitBtn.click();
+  }
+});
+elements.loginAccountInput.addEventListener("input", () => {
+  const currentDraftAccount = String(elements.loginAccountInput.value ?? "").trim();
+  const baselineAccount = String(authSheetContext.baselineAccount ?? "").trim();
+  const accountChanged =
+    baselineAccount !== "" &&
+    currentDraftAccount.toLowerCase() !== baselineAccount.toLowerCase();
+  if (accountChanged) {
+    elements.loginPasswordInput.value = "";
+    markSecretFieldClean("password");
+  }
+  syncAuthPasswordPlaceholder(latestConfigView);
+  refreshAuthSubmitState(latestConfigView);
+});
+elements.loginPasswordInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    elements.authSubmitBtn.click();
+  }
+});
+elements.loginPasswordInput.addEventListener("input", () => {
+  markSecretFieldDirty("password");
+  refreshAuthSubmitState(latestConfigView);
+});
+elements.authSubmitBtn.addEventListener("click", async () => {
   const result = await runTask(
-    () => Login(elements.accountInput.value, elements.passwordInput.value),
+    () => Login(elements.loginAccountInput.value, elements.loginPasswordInput.value),
     (value) => value,
     "neutral",
   );
+  if (result?.ok) {
+    markSecretFieldClean("password");
+    closeAuthSheet();
+  }
   if (result?.needsCaptcha) {
     openSettings();
-    // Ensure captcha overlay shows immediately if backend returned a URL
+    closeAuthSheet();
     const url = result.captchaURL || result.CaptchaURL || "";
     if (url) {
       activeCaptchaURL = String(url);
       captchaDismissed = false;
       elements.captchaFrame.src = activeCaptchaURL;
       elements.captchaOverlay.hidden = false;
+      void syncMonitorPauseState();
     }
   }
 });
@@ -1139,6 +1624,7 @@ elements.scanWindowBtn.addEventListener("click", async () => {
 elements.captchaCloseBtn.addEventListener("click", () => {
   captchaDismissed = true;
   elements.captchaOverlay.hidden = true;
+  void syncMonitorPauseState();
 });
 
 EventsOn("state", (state) => {

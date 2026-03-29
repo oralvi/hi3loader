@@ -3,9 +3,6 @@ package service
 import (
 	"image"
 	"image/color"
-	"strings"
-
-	"hi3loader/internal/winwindow"
 )
 
 func (s *Service) tryExpandWindowQRCode(img image.Image) (MessageRef, error) {
@@ -15,19 +12,16 @@ func (s *Service) tryExpandWindowQRCode(img image.Image) (MessageRef, error) {
 	}
 	switch ref.Code {
 	case "backend.hint.qr_panel_unrecognized":
-		s.logf("game window captured, but login panel heuristics did not match")
 		s.noteWindowQRHint(
 			ref,
 			"Login panel was not recognized in the captured game window. Open the login window and try again.",
 		)
 	case "backend.hint.qr_visible_but_unreadable":
-		s.logf("login panel detected with QR area visible, but no usable QR was decoded")
 		s.noteWindowQRHint(
 			ref,
 			"A QR area is visible, but no usable QR code was decoded. Make sure the QR is clear and retry.",
 		)
 	case "backend.hint.qr_expand_manual":
-		s.logf("login panel detected without QR login; manual QR switch is required")
 		s.noteWindowQRHint(
 			ref,
 			"QR login is not open in the game window. Please switch to QR login manually.",
@@ -36,13 +30,9 @@ func (s *Service) tryExpandWindowQRCode(img image.Image) (MessageRef, error) {
 	return ref, nil
 }
 
-func (s *Service) tryRefreshExpiredWindowQRCode(window *winwindow.Window, img image.Image) (MessageRef, error) {
+func (s *Service) tryRefreshExpiredWindowQRCode(img image.Image) (MessageRef, error) {
 	if img == nil {
-		captured, err := winwindow.Capture(window)
-		if err != nil {
-			return MessageRef{}, err
-		}
-		img = captured
+		return MessageRef{}, nil
 	}
 
 	ref := newMessageRef("backend.hint.qr_refresh_manual", nil)
@@ -58,8 +48,6 @@ func (s *Service) tryRefreshExpiredWindowQRCode(window *winwindow.Window, img im
 		return MessageRef{}, nil
 	}
 	if refreshPoint, ok := detectRefreshButtonPoint(relativeImageView{src: img, rect: modal}); ok && refreshPoint.In(modal) {
-		s.logf("expired QR visual detected at (%d,%d)", refreshPoint.X, refreshPoint.Y)
-		s.logf("expired QR detected in the game window; manual refresh is required")
 		s.noteWindowQRHint(
 			ref,
 			"The QR code has expired. Please click Refresh in the game window.",
@@ -70,7 +58,6 @@ func (s *Service) tryRefreshExpiredWindowQRCode(window *winwindow.Window, img im
 		return MessageRef{}, nil
 	}
 
-	s.logf("expired QR detected in the game window; manual refresh is required")
 	s.noteWindowQRHint(
 		ref,
 		"The QR code has expired. Please click Refresh in the game window.",
@@ -126,14 +113,6 @@ func classifyWindowQRState(img image.Image) (MessageRef, bool) {
 
 func (s *Service) noteWindowQRHint(ref MessageRef, logText string) {
 	s.setHint(ref, logText)
-}
-
-func shouldAttemptWindowQRExpand(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(strings.TrimSpace(err.Error()))
-	return strings.Contains(msg, "no qr code found")
 }
 
 func detectLoginModalBounds(img image.Image) (image.Rectangle, bool) {

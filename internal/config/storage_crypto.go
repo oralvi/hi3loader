@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +28,34 @@ type storedConfig struct {
 	CryptoSalt string `json:"crypto_salt,omitempty"`
 }
 
+type storedConfigJSON struct {
+	CurrentAccount        string         `json:"current_account,omitempty"`
+	SleepTime             int            `json:"sleep_time"`
+	ClipCheck             bool           `json:"clip_check"`
+	AutoClose             bool           `json:"auto_close"`
+	GamePath              string         `json:"game_path,omitempty"`
+	HI3UID                string         `json:"HI3UID,omitempty"`
+	BILIHITOKEN           string         `json:"BILIHITOKEN,omitempty"`
+	AsteriskName          string         `json:"asterisk_name,omitempty"`
+	BHVer                 string         `json:"bh_ver,omitempty"`
+	BiliPkgVer            int            `json:"bili_pkg_ver,omitempty"`
+	Accounts              []SavedAccount `json:"accounts,omitempty"`
+	AutoClip              bool           `json:"auto_clip"`
+	VersionAPI            string         `json:"version_api,omitempty"`
+	DispatchAPI           string         `json:"dispatch_api,omitempty"`
+	DispatchData          string         `json:"dispatch_data,omitempty"`
+	DispatchVersion       string         `json:"dispatch_version,omitempty"`
+	DispatchSource        string         `json:"dispatch_source,omitempty"`
+	DispatchRawLen        int            `json:"dispatch_raw_len,omitempty"`
+	DispatchDecodedLen    int            `json:"dispatch_decoded_len,omitempty"`
+	DispatchDecodedSHA256 string         `json:"dispatch_decoded_sha256,omitempty"`
+	DispatchSavedAt       string         `json:"dispatch_saved_at,omitempty"`
+	BackgroundImage       string         `json:"background_image,omitempty"`
+	BackgroundOpacity     float64        `json:"background_opacity"`
+	PanelBlur             bool           `json:"panel_blur"`
+	CryptoSalt            string         `json:"crypto_salt,omitempty"`
+}
+
 type configCipher struct {
 	aead cipher.AEAD
 }
@@ -37,11 +66,52 @@ var (
 	deviceSecretErr  error
 )
 
+func (s storedConfig) MarshalJSON() ([]byte, error) {
+	payload := storedConfigJSON{
+		CurrentAccount:        normalizeString(s.CurrentAccount),
+		SleepTime:             s.SleepTime,
+		ClipCheck:             s.ClipCheck,
+		AutoClose:             s.AutoClose,
+		GamePath:              normalizeString(s.GamePath),
+		HI3UID:                normalizeString(s.HI3UID),
+		BILIHITOKEN:           normalizeString(s.BILIHITOKEN),
+		AsteriskName:          normalizeString(s.AsteriskName),
+		BHVer:                 normalizeString(s.BHVer),
+		BiliPkgVer:            s.BiliPkgVer,
+		Accounts:              append([]SavedAccount(nil), s.Accounts...),
+		AutoClip:              s.AutoClip,
+		VersionAPI:            normalizeString(s.VersionAPI),
+		DispatchAPI:           normalizeString(s.DispatchAPI),
+		DispatchData:          normalizeString(s.DispatchData),
+		DispatchVersion:       normalizeString(s.DispatchVersion),
+		DispatchSource:        normalizeString(s.DispatchSource),
+		DispatchRawLen:        s.DispatchRawLen,
+		DispatchDecodedLen:    s.DispatchDecodedLen,
+		DispatchDecodedSHA256: normalizeString(s.DispatchDecodedSHA256),
+		DispatchSavedAt:       normalizeString(s.DispatchSavedAt),
+		BackgroundImage:       normalizeString(s.BackgroundImage),
+		BackgroundOpacity:     s.BackgroundOpacity,
+		PanelBlur:             s.PanelBlur,
+		CryptoSalt:            normalizeString(s.CryptoSalt),
+	}
+	return json.Marshal(payload)
+}
+
 func encodeStoredConfig(cfg *Config) (*storedConfig, error) {
 	clone := cfg.Clone()
 	if clone == nil {
 		return nil, fmt.Errorf("encode config: config is nil")
 	}
+	if clone.CurrentAccount == "" {
+		clone.CurrentAccount = strings.TrimSpace(clone.Account)
+	}
+	clone.Account = ""
+	clone.Password = ""
+	clone.UID = 0
+	clone.AccessKey = ""
+	clone.UName = ""
+	clone.LastLoginSucc = false
+	clone.AccountLogin = false
 	if !needsSensitiveStorage(clone) {
 		clone.cryptoSalt = ""
 		cfg.cryptoSalt = ""
@@ -105,6 +175,15 @@ func encryptSensitiveFields(cfg *Config) error {
 	if cfg.DispatchData, err = crypt.sealString("dispatch_data", cfg.DispatchData); err != nil {
 		return err
 	}
+	for idx := range cfg.Accounts {
+		label := fmt.Sprintf("accounts[%d]", idx)
+		if cfg.Accounts[idx].Password, err = crypt.sealString(label+".password", cfg.Accounts[idx].Password); err != nil {
+			return err
+		}
+		if cfg.Accounts[idx].AccessKey, err = crypt.sealString(label+".access_key", cfg.Accounts[idx].AccessKey); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -142,6 +221,15 @@ func decryptSensitiveFields(cfg *Config) (bool, error) {
 	if cfg.DispatchData, storageChanged, err = decryptMaybeEncryptedString(crypt, "dispatch_data", cfg.DispatchData, storageChanged); err != nil {
 		return storageChanged, err
 	}
+	for idx := range cfg.Accounts {
+		label := fmt.Sprintf("accounts[%d]", idx)
+		if cfg.Accounts[idx].Password, storageChanged, err = decryptMaybeEncryptedString(crypt, label+".password", cfg.Accounts[idx].Password, storageChanged); err != nil {
+			return storageChanged, err
+		}
+		if cfg.Accounts[idx].AccessKey, storageChanged, err = decryptMaybeEncryptedString(crypt, label+".access_key", cfg.Accounts[idx].AccessKey, storageChanged); err != nil {
+			return storageChanged, err
+		}
+	}
 	return storageChanged, nil
 }
 
@@ -171,6 +259,11 @@ func clearSensitiveFields(cfg *Config) {
 	cfg.AccessKey = ""
 	cfg.BILIHITOKEN = ""
 	cfg.DispatchData = ""
+	for idx := range cfg.Accounts {
+		cfg.Accounts[idx].Password = ""
+		cfg.Accounts[idx].AccessKey = ""
+		cfg.Accounts[idx].LastLoginSucc = false
+	}
 	cfg.DispatchVersion = ""
 	cfg.DispatchSource = ""
 	cfg.DispatchRawLen = 0
@@ -187,6 +280,11 @@ func hasEncryptedSensitiveValue(cfg *Config) bool {
 	if isEncryptedString(cfg.Password) || isEncryptedString(cfg.AccessKey) || isEncryptedString(cfg.BILIHITOKEN) || isEncryptedString(cfg.DispatchData) {
 		return true
 	}
+	for _, account := range cfg.Accounts {
+		if isEncryptedString(account.Password) || isEncryptedString(account.AccessKey) {
+			return true
+		}
+	}
 	return false
 }
 
@@ -196,6 +294,11 @@ func needsSensitiveStorage(cfg *Config) bool {
 	}
 	if normalizeString(cfg.Password) != "" || normalizeString(cfg.AccessKey) != "" || normalizeString(cfg.BILIHITOKEN) != "" || normalizeString(cfg.DispatchData) != "" {
 		return true
+	}
+	for _, account := range cfg.Accounts {
+		if normalizeString(account.Password) != "" || normalizeString(account.AccessKey) != "" {
+			return true
+		}
 	}
 	return false
 }

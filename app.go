@@ -47,8 +47,8 @@ func (a *App) LogSnapshot() []service.LogEntry {
 	return a.svc.LogSnapshot()
 }
 
-func (a *App) SaveFeatureSettings(gamePath string, clipCheck, autoClose, autoClip, panelBlur bool, opacity float64) (service.State, error) {
-	return a.svc.SaveFeatureSettings(strings.TrimSpace(gamePath), clipCheck, autoClose, autoClip, panelBlur, opacity)
+func (a *App) SaveFeatureSettings(gamePath string, autoClose, autoClip, panelBlur bool, opacity float64) (service.State, error) {
+	return a.svc.SaveFeatureSettings(strings.TrimSpace(gamePath), autoClose, autoClip, panelBlur, opacity)
 }
 
 func (a *App) UpdateBackground(backgroundPath string, opacity float64) (service.State, error) {
@@ -105,7 +105,7 @@ func (a *App) BrowseBackgroundImage() (string, error) {
 		Filters: []runtime.FileFilter{
 			{
 				DisplayName: "Image Files",
-				Pattern:     "*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.gif;*.tif;*.tiff",
+				Pattern:     "*.png;*.jpg;*.jpeg;*.webp",
 			},
 		},
 	})
@@ -123,38 +123,12 @@ func (a *App) ScanTicket(ticket string) (service.ScanResult, error) {
 	return a.svc.ScanTicket(context.Background(), strings.TrimSpace(ticket))
 }
 
-func (a *App) ScanURL(rawURL string) (service.ScanResult, error) {
-	return a.svc.ScanURL(context.Background(), strings.TrimSpace(rawURL))
-}
-
-func (a *App) ScanClipboard() (bool, error) {
-	return a.svc.ScanClipboardOnce(context.Background())
-}
-
 func (a *App) ScanWindow() (service.ScanWindowResult, error) {
 	return a.svc.ScanWindow(context.Background())
 }
 
-func (a *App) ManualRefreshDispatch(hi3uid, biliHitoken string) (service.State, error) {
-	// Save credentials and attempt a dispatch refresh immediately
-	if strings.TrimSpace(hi3uid) == "" || strings.TrimSpace(biliHitoken) == "" {
-		return a.svc.State(), nil
-	}
-	return a.svc.ManualRefreshDispatch(context.Background(), strings.TrimSpace(hi3uid), strings.TrimSpace(biliHitoken))
-}
-
-func (a *App) ManualFetchBiliHitoken() (service.State, error) {
-	return a.svc.ManualFetchBiliHitoken(context.Background())
-}
-
-func (a *App) SaveCredentialSettings(hi3uid string, updateHI3UID bool, biliHitoken string, updateBiliHitoken bool, asteriskName string) (service.State, error) {
-	return a.svc.SaveCredentialSettings(
-		strings.TrimSpace(hi3uid),
-		updateHI3UID,
-		strings.TrimSpace(biliHitoken),
-		updateBiliHitoken,
-		strings.TrimSpace(asteriskName),
-	)
+func (a *App) SaveCredentialSettings(asteriskName, loaderAPIBaseURL string) (service.State, error) {
+	return a.svc.SaveCredentialSettings(strings.TrimSpace(asteriskName), strings.TrimSpace(loaderAPIBaseURL))
 }
 
 func (a *App) RecordClientMessage(message string) {

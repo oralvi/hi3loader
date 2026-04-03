@@ -19,10 +19,12 @@
 /tmp/
 tmp/
 tmp_*/
+/.codex-tmp/
+/config.json.corrupt*
 
 # Local workspace extras
 /scripts/manual_fetch_bili.go
-/internal/**/aux_tables.go
+/internal/bridge/server_authority_generated.go
 
 # Go caches
 GOCACHE/

@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build windows
 
 package config
 
@@ -6,9 +6,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"golang.org/x/sys/windows"
 )
 
-func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
+const (
+	moveFileReplaceExisting = 0x1
+	moveFileWriteThrough    = 0x8
+)
+
+func AtomicWriteFile(path string, data []byte, mode os.FileMode) error {
+	_ = mode
 	dir := filepath.Dir(path)
 	if dir == "" {
 		dir = "."
@@ -25,10 +33,6 @@ func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
 		}
 	}()
 
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		return err
-	}
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		return err
@@ -40,21 +44,18 @@ func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("rename temp config: %w", err)
+
+	from, err := windows.UTF16PtrFromString(tmpPath)
+	if err != nil {
+		return err
+	}
+	to, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	if err := windows.MoveFileEx(from, to, moveFileReplaceExisting|moveFileWriteThrough); err != nil {
+		return fmt.Errorf("replace config file: %w", err)
 	}
 	cleanup = false
-	return syncDir(dir)
-}
-
-func syncDir(dir string) error {
-	handle, err := os.Open(dir)
-	if err != nil {
-		return nil
-	}
-	defer handle.Close()
-	if err := handle.Sync(); err != nil {
-		return nil
-	}
 	return nil
 }

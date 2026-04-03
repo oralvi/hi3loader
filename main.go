@@ -1,14 +1,10 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"embed"
 	"log"
-	"os"
-	"time"
 
-	"hi3loader/internal/bridge"
+	"hi3loader/internal/buildinfo"
 	"hi3loader/internal/service"
 
 	"github.com/wailsapp/wails/v2"
@@ -19,57 +15,16 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
-var appVersion = "1.1.2"
-var buildStamp = ""
-var runtimeDevStamp = ""
-
-func effectiveBuildStamp() string {
-	if buildStamp != "" {
-		return buildStamp
-	}
-	if runtimeDevStamp == "" {
-		runtimeDevStamp = "dev+" + randomMask(4) + "+" + time.Now().Format("060102150405")
-	}
-	return runtimeDevStamp
-}
-
-func randomMask(size int) string {
-	if size <= 0 {
-		size = 4
-	}
-	buf := make([]byte, size)
-	if _, err := rand.Read(buf); err != nil {
-		return "dev"
-	}
-	return hex.EncodeToString(buf)
-}
-
 func appTitle() string {
-	title := "HI3 Loader " + appVersion
-	if stamp := effectiveBuildStamp(); stamp != "" {
+	title := "HI3 Loader " + buildinfo.AppVersion
+	if stamp := buildinfo.EffectiveBuildStamp(); stamp != "" {
 		title += " [" + stamp + "]"
 	}
 	return title
 }
 
 func main() {
-	handled, err := bridge.HandleAuxRuntime(os.Args[1:], os.Stdin, os.Stdout)
-	if err != nil {
-		log.Fatal(err)
-	}
-	if handled {
-		return
-	}
-
-	exePath, err := os.Executable()
-	if err != nil {
-		log.Fatalf("resolve executable path: %v", err)
-	}
-
-	svc, err := service.NewWithOptions("config.json", service.Options{
-		BridgeExecutable: exePath,
-		RequireBridge:    true,
-	})
+	svc, err := service.New("config.json")
 	if err != nil {
 		log.Fatalf("init service: %v", err)
 	}

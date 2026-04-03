@@ -8,9 +8,7 @@ import (
 	"testing"
 )
 
-const (
-	testNicknameUnicode = "\u4e0d\u60f3\u52a0\u5927\u73ed\u7684\u963f\u51db"
-)
+const testNicknameUnicode = "不想加大班的阿凛"
 
 func readJSONMap(t *testing.T, path string) map[string]any {
 	t.Helper()
@@ -27,35 +25,37 @@ func readJSONMap(t *testing.T, path string) map[string]any {
 	return parsed
 }
 
-func TestSaveLoadEncryptsSensitiveFields(t *testing.T) {
-	t.Setenv(storageSecretEnvVar, t.TempDir())
-	t.Setenv(machineIDEnvVar, "test-machine-id")
-
+func TestSaveLoadProtectsStoredSessionSecrets(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	cfg := Default()
-	cfg.Account = "tester"
-	cfg.Password = "secret-password"
-	cfg.AccessKey = "secret-access-key"
 	cfg.CurrentAccount = "tester"
-	cfg.BILIHITOKEN = "secret-bili-hitoken"
-	cfg.SetDispatchSnapshot("8.7.0", DispatchCacheEntry{
-		Data:          "secret-dispatch-data",
-		Source:        "preferred_dispatch",
-		RawLen:        123,
-		DecodedLen:    456,
-		DecodedSHA256: "abc123",
-		SavedAt:       "2026-03-19T13:00:00Z",
-	})
 	cfg.Accounts = []SavedAccount{
+		{
+			Account:       "tester",
+			Password:      "secret-password",
+			UID:           424242,
+			AccessKey:     "secret-access-key",
+			UName:         "Tester",
+			LastLoginSucc: true,
+		},
 		{
 			Account:       "tester-alt",
 			Password:      "secret-alt-password",
-			UID:           424242,
+			UID:           525252,
 			AccessKey:     "secret-alt-access-key",
 			UName:         "AltUser",
 			LastLoginSucc: true,
 		},
+	}
+	cfg.LoaderAPIBaseURL = "https://127.0.0.1:19777"
+	cfg.DeviceProfile = DeviceProfile{
+		AndroidID:       "84567e2dda72d1d4",
+		MACAddress:      "08:00:27:53:DD:12",
+		IMEI:            "227656364311444",
+		RuntimeUDID:     "RUNTIMEUDID1234567890ABCDEFGH123456",
+		UserProfileUDID: "XXA31CBAB6CBA63E432E087B58411A213BFB7",
+		CurBuvid:        "XZA2FA4AC240F665E2F27F603ABF98C615C29",
 	}
 
 	if err := Save(path, cfg); err != nil {
@@ -68,80 +68,83 @@ func TestSaveLoadEncryptsSensitiveFields(t *testing.T) {
 	}
 	text := string(raw)
 	for _, secret := range []string{
-		cfg.Password,
-		cfg.AccessKey,
-		cfg.BILIHITOKEN,
-		cfg.DispatchData,
 		cfg.Accounts[0].Password,
 		cfg.Accounts[0].AccessKey,
+		cfg.Accounts[1].Password,
+		cfg.Accounts[1].AccessKey,
+		cfg.DeviceProfile.AndroidID,
+		cfg.DeviceProfile.MACAddress,
+		cfg.DeviceProfile.IMEI,
+		cfg.DeviceProfile.RuntimeUDID,
+		cfg.DeviceProfile.UserProfileUDID,
+		cfg.DeviceProfile.CurBuvid,
 	} {
 		if strings.Contains(text, secret) {
-			t.Fatalf("secret %q was written in plaintext", secret)
+			t.Fatalf("expected secret %q to stay out of stored config", secret)
 		}
 	}
-	if !strings.Contains(text, storageEnvelopePrefix) {
-		t.Fatalf("expected encrypted payload marker in stored config")
-	}
+
 	parsed := readJSONMap(t, path)
 	for _, key := range []string{"account", "password", "access_key", "uid", "uname", "last_login_succ", "account_login"} {
 		if _, ok := parsed[key]; ok {
-			t.Fatalf("expected root legacy auth field %q to be omitted from stored config", key)
+			t.Fatalf("expected root auth field %q to be omitted from stored config", key)
 		}
 	}
-	if !strings.Contains(text, `"current_account": "tester"`) {
-		t.Fatalf("expected stored config to keep current_account")
+	if strings.TrimSpace(StringValue(parsed["device_blob"])) == "" {
+		t.Fatal("expected stored device blob")
+	}
+	accounts, ok := parsed["accounts"].([]any)
+	if !ok || len(accounts) != 2 {
+		t.Fatalf("expected 2 stored accounts, got %#v", parsed["accounts"])
+	}
+	for _, rawEntry := range accounts {
+		entry, ok := rawEntry.(map[string]any)
+		if !ok {
+			t.Fatalf("expected stored account object, got %#v", rawEntry)
+		}
+		if _, hasPassword := entry["password"]; hasPassword {
+			t.Fatalf("expected stored account password to be omitted: %#v", entry)
+		}
+		if _, hasAccessKey := entry["access_key"]; hasAccessKey {
+			t.Fatalf("expected stored account access key to be omitted: %#v", entry)
+		}
+		if strings.TrimSpace(StringValue(entry["session_blob"])) == "" {
+			t.Fatalf("expected stored account session blob: %#v", entry)
+		}
 	}
 
 	loaded, err := LoadOrCreate(path)
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if loaded.Password != "secret-password" {
-		t.Fatalf("unexpected password: %q", loaded.Password)
+	active, ok := loaded.CurrentSavedAccount()
+	if !ok {
+		t.Fatal("expected active saved account")
 	}
-	if loaded.AccessKey != "secret-access-key" {
-		t.Fatalf("unexpected access key: %q", loaded.AccessKey)
+	if active.Account != "tester" {
+		t.Fatalf("unexpected account: %q", active.Account)
 	}
-	if loaded.BILIHITOKEN != "secret-bili-hitoken" {
-		t.Fatalf("unexpected bilihitoken: %q", loaded.BILIHITOKEN)
+	if active.Password != "secret-password" {
+		t.Fatalf("unexpected password: %q", active.Password)
 	}
-	if loaded.DispatchData != "secret-dispatch-data" {
-		t.Fatalf("unexpected dispatch data: %q", loaded.DispatchData)
+	if active.AccessKey != "secret-access-key" {
+		t.Fatalf("unexpected access key: %q", active.AccessKey)
 	}
-	if loaded.DispatchVersion != "8.7.0_gf_android_bilibili" {
-		t.Fatalf("unexpected dispatch version: %q", loaded.DispatchVersion)
+	if loaded.LoaderAPIBaseURL != "https://127.0.0.1:19777" {
+		t.Fatalf("unexpected loader api base url: %q", loaded.LoaderAPIBaseURL)
 	}
-	if loaded.DispatchSource != "preferred_dispatch" {
-		t.Fatalf("unexpected dispatch source: %q", loaded.DispatchSource)
+	if loaded.DeviceProfile.AndroidID != cfg.DeviceProfile.AndroidID {
+		t.Fatalf("unexpected device android id: %q", loaded.DeviceProfile.AndroidID)
 	}
-	if loaded.CurrentAccount != "tester" {
-		t.Fatalf("unexpected current account: %q", loaded.CurrentAccount)
+	if loaded.DeviceProfile.MACAddress != cfg.DeviceProfile.MACAddress {
+		t.Fatalf("unexpected device mac: %q", loaded.DeviceProfile.MACAddress)
 	}
 	if len(loaded.Accounts) != 2 {
-		t.Fatalf("expected two saved accounts, got %d", len(loaded.Accounts))
-	}
-	var foundAlt bool
-	for _, account := range loaded.Accounts {
-		if account.Account != "tester-alt" {
-			continue
-		}
-		foundAlt = true
-		if account.Password != "secret-alt-password" {
-			t.Fatalf("unexpected saved account password: %q", account.Password)
-		}
-		if account.AccessKey != "secret-alt-access-key" {
-			t.Fatalf("unexpected saved account access key: %q", account.AccessKey)
-		}
-	}
-	if !foundAlt {
-		t.Fatal("expected migrated saved account entry for tester-alt")
+		t.Fatalf("expected 2 saved accounts, got %d", len(loaded.Accounts))
 	}
 }
 
 func TestLoadOrCreateBacksUpCorruptConfig(t *testing.T) {
-	t.Setenv(storageSecretEnvVar, t.TempDir())
-	t.Setenv(machineIDEnvVar, "test-machine-id")
-
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	if err := os.WriteFile(path, []byte("{not-json"), 0o600); err != nil {
@@ -150,10 +153,10 @@ func TestLoadOrCreateBacksUpCorruptConfig(t *testing.T) {
 
 	cfg, err := LoadOrCreate(path)
 	if err != nil {
-		t.Fatalf("load corrupt config: %v", err)
+		t.Fatalf("load config: %v", err)
 	}
 	if cfg == nil {
-		t.Fatalf("expected default config after corrupt load")
+		t.Fatal("expected default config after corrupt load")
 	}
 
 	matches, err := filepath.Glob(path + ".corrupt-*")
@@ -165,157 +168,12 @@ func TestLoadOrCreateBacksUpCorruptConfig(t *testing.T) {
 	}
 }
 
-func TestLegacyPlaintextConfigMigratesToEncryptedStorage(t *testing.T) {
-	t.Setenv(storageSecretEnvVar, t.TempDir())
-	t.Setenv(machineIDEnvVar, "test-machine-id")
-
+func TestLoadOrCreateResetsUnsupportedLegacyKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	legacy := `{
-  "account": "tester",
-  "password": "legacy-password",
-  "access_key": "legacy-access-key",
-  "BILIHITOKEN": "legacy-hitoken",
-  "dispatch_data": "legacy-dispatch",
-  "dispatch_cache": {
-    "8.7.0_gf_android_bilibili": {
-      "data": "legacy-dispatch",
-      "source": "legacy_cache",
-      "saved_at": "2026-03-19T10:00:00Z"
-    }
-  }
-}`
-	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
-		t.Fatalf("write legacy config: %v", err)
-	}
-
-	cfg, err := LoadOrCreate(path)
-	if err != nil {
-		t.Fatalf("load legacy config: %v", err)
-	}
-	if cfg.Password != "legacy-password" || cfg.AccessKey != "legacy-access-key" || cfg.BILIHITOKEN != "legacy-hitoken" || cfg.DispatchData != "legacy-dispatch" {
-		t.Fatalf("legacy config did not round-trip through migration")
-	}
-	if cfg.DispatchVersion != "8.7.0_gf_android_bilibili" {
-		t.Fatalf("legacy dispatch cache was not migrated")
-	}
-	if cfg.DispatchSource != "legacy_cache" {
-		t.Fatalf("legacy dispatch source was not preserved")
-	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read migrated config: %v", err)
-	}
-	text := string(raw)
-	for _, secret := range []string{"legacy-password", "legacy-access-key", "legacy-hitoken", "legacy-dispatch"} {
-		if strings.Contains(text, secret) {
-			t.Fatalf("legacy secret %q still present in plaintext", secret)
-		}
-	}
-	if !strings.Contains(text, storageEnvelopePrefix) {
-		t.Fatalf("expected migrated config to contain encrypted payload marker")
-	}
-	parsed := readJSONMap(t, path)
-	if _, ok := parsed["account"]; ok {
-		t.Fatalf("legacy root account should not remain after migration")
-	}
-	if strings.Contains(text, "\"dispatch_cache\"") {
-		t.Fatalf("legacy dispatch_cache should not be persisted after migration")
-	}
-}
-
-func TestLoadLooseTypedConfigRewritesCanonicalFormat(t *testing.T) {
-	t.Setenv(storageSecretEnvVar, t.TempDir())
-	t.Setenv(machineIDEnvVar, "test-machine-id")
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-	loose := "\ufeff{\n" +
-		`  "account": 123456,` + "\n" +
-		`  "sleep_time": "5",` + "\n" +
-		`  "clip_check": "true",` + "\n" +
-		`  "auto_close": "1",` + "\n" +
-		`  "uid": "42",` + "\n" +
-		`  "last_login_succ": "true",` + "\n" +
-		`  "auto_clip": "false",` + "\n" +
-		`  "account_login": "true",` + "\n" +
-		`  "background_opacity": "0.55",` + "\n" +
-		`  "panel_blur": "false",` + "\n" +
-		`  "bh_ver": 8.7,` + "\n" +
-		`  "auto_expand_qrcode": true,` + "\n" +
-		`  "auto_refresh_expired_qr": true,` + "\n" +
-		`  "ver": 5` + "\n" +
-		`}`
-	if err := os.WriteFile(path, []byte(loose), 0o600); err != nil {
-		t.Fatalf("write loose config: %v", err)
-	}
-
-	cfg, err := LoadOrCreate(path)
-	if err != nil {
-		t.Fatalf("load loose config: %v", err)
-	}
-
-	if cfg.Account != "123456" {
-		t.Fatalf("unexpected account: %q", cfg.Account)
-	}
-	if cfg.SleepTime != 5 {
-		t.Fatalf("unexpected sleep time: %d", cfg.SleepTime)
-	}
-	if !cfg.ClipCheck || !cfg.AutoClose || cfg.AutoClip {
-		t.Fatalf("unexpected boolean coercion: clip=%v close=%v autoClip=%v", cfg.ClipCheck, cfg.AutoClose, cfg.AutoClip)
-	}
-	if cfg.UID != 42 {
-		t.Fatalf("unexpected uid: %d", cfg.UID)
-	}
-	if cfg.BackgroundOpacity != 0.55 {
-		t.Fatalf("unexpected background opacity: %v", cfg.BackgroundOpacity)
-	}
-	if cfg.PanelBlur {
-		t.Fatalf("expected panel blur false after coercion")
-	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read rewritten config: %v", err)
-	}
-	text := string(raw)
-	for _, key := range []string{"auto_expand_qrcode", "auto_refresh_expired_qr", "\"ver\""} {
-		if strings.Contains(text, key) {
-			t.Fatalf("deprecated key %q should not remain after rewrite", key)
-		}
-	}
-	if !strings.Contains(text, "\"sleep_time\": 5") {
-		t.Fatalf("expected canonical numeric sleep_time in rewritten config")
-	}
-	if !strings.Contains(text, "\"clip_check\": true") {
-		t.Fatalf("expected canonical boolean clip_check in rewritten config")
-	}
-	if strings.Contains(text, "\"clip_check\": \"true\"") {
-		t.Fatalf("stringified clip_check should have been normalized")
-	}
-	if strings.HasPrefix(text, "\ufeff") {
-		t.Fatalf("utf-8 BOM should have been removed during rewrite")
-	}
-}
-
-func TestLoadConfigDropsLegacyDispatchCacheAfterRewrite(t *testing.T) {
-	t.Setenv(storageSecretEnvVar, t.TempDir())
-	t.Setenv(machineIDEnvVar, "test-machine-id")
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-	legacy := `{
-  "account": "tester",
-  "dispatch_data": "legacy-dispatch",
-  "dispatch_cache": {
-    "8.7.0_gf_android_bilibili": {
-      "data": "legacy-dispatch",
-      "source": "legacy_cache",
-      "saved_at": "2026-03-19T10:00:00Z"
-    }
-  },
-  "auto_expand_qrcode": true
+  "current_account": "tester",
+  "dispatch_data": "legacy-dispatch"
 }`
 	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
 		t.Fatalf("write legacy config: %v", err)
@@ -325,76 +183,91 @@ func TestLoadConfigDropsLegacyDispatchCacheAfterRewrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if cfg.DispatchVersion != "8.7.0_gf_android_bilibili" {
-		t.Fatalf("expected migrated dispatch version, got %q", cfg.DispatchVersion)
+	if cfg.CurrentAccount != "" {
+		t.Fatalf("expected reset config after unsupported keys, got current account %q", cfg.CurrentAccount)
 	}
 
-	raw, err := os.ReadFile(path)
+	matches, err := filepath.Glob(path + ".corrupt-*")
 	if err != nil {
-		t.Fatalf("read rewritten config: %v", err)
+		t.Fatalf("glob corrupt backups: %v", err)
 	}
-	text := string(raw)
-	if strings.Contains(text, "\"dispatch_cache\"") {
-		t.Fatalf("legacy dispatch_cache should not remain after rewrite")
+	if len(matches) != 1 {
+		t.Fatalf("expected unsupported config to be backed up, got %d backups", len(matches))
 	}
-	if strings.Contains(text, "auto_expand_qrcode") {
-		t.Fatalf("deprecated experimental key should not remain after rewrite")
+
+	parsed := readJSONMap(t, path)
+	if _, ok := parsed["dispatch_data"]; ok {
+		t.Fatal("expected unsupported key to be removed after reset")
 	}
 }
 
-func TestDefaultNicknameIsPopulatedAndNormalized(t *testing.T) {
+func TestDefaultNicknameAndLoaderAPIBaseURL(t *testing.T) {
 	cfg := Default()
 	if cfg.AsteriskName != DefaultAsteriskName {
 		t.Fatalf("unexpected default nickname: %q", cfg.AsteriskName)
 	}
+	if cfg.LoaderAPIBaseURL != "" {
+		t.Fatalf("expected loader api url to default empty, got %q", cfg.LoaderAPIBaseURL)
+	}
 
 	cfg.AsteriskName = ""
 	if !cfg.Normalize() {
-		t.Fatalf("expected normalize to restore missing nickname")
+		t.Fatal("expected normalize to restore missing nickname")
 	}
 	if cfg.AsteriskName != DefaultAsteriskName {
 		t.Fatalf("unexpected normalized nickname: %q", cfg.AsteriskName)
 	}
 }
 
-func TestSaveLoadPreservesCustomNickname(t *testing.T) {
-	t.Setenv(storageSecretEnvVar, t.TempDir())
-	t.Setenv(machineIDEnvVar, "test-machine-id")
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
+func TestNormalizeSelectsFirstSavedAccountAsCurrent(t *testing.T) {
 	cfg := Default()
+	cfg.Accounts = []SavedAccount{
+		{
+			Account:       "tester",
+			Password:      "secret",
+			UID:           1024,
+			AccessKey:     "access",
+			UName:         "Tester",
+			LastLoginSucc: true,
+		},
+	}
 	cfg.AsteriskName = testNicknameUnicode
 
-	if err := Save(path, cfg); err != nil {
-		t.Fatalf("save config: %v", err)
+	if !cfg.Normalize() {
+		t.Fatal("expected normalize to select the first saved account")
 	}
-
-	loaded, err := LoadOrCreate(path)
-	if err != nil {
-		t.Fatalf("load config: %v", err)
+	if cfg.CurrentAccount != "tester" {
+		t.Fatalf("unexpected current account: %q", cfg.CurrentAccount)
 	}
-	if loaded.AsteriskName != testNicknameUnicode {
-		t.Fatalf("unexpected loaded nickname: %q", loaded.AsteriskName)
+	if cfg.AsteriskName != testNicknameUnicode {
+		t.Fatalf("unexpected nickname after normalize: %q", cfg.AsteriskName)
 	}
 }
 
-func TestNormalizeMigratesCurrentAccountIntoSavedAccounts(t *testing.T) {
-	cfg := Default()
-	cfg.Account = "tester"
-	cfg.Password = "secret"
-	cfg.UID = 1024
-	cfg.AccessKey = "access"
-	cfg.UName = "Tester"
-	cfg.LastLoginSucc = true
-
-	if !cfg.Normalize() {
-		t.Fatalf("expected normalize to migrate current account into saved accounts")
+func TestGenerateDeviceProfileProducesCompleteProfile(t *testing.T) {
+	profile, err := GenerateDeviceProfile()
+	if err != nil {
+		t.Fatalf("GenerateDeviceProfile() error = %v", err)
 	}
-	if len(cfg.Accounts) != 1 {
-		t.Fatalf("expected one saved account, got %d", len(cfg.Accounts))
+	if !profile.IsComplete() {
+		t.Fatalf("expected generated profile to be complete: %#v", profile)
 	}
-	if cfg.Accounts[0].Account != "tester" {
-		t.Fatalf("unexpected saved account id: %q", cfg.Accounts[0].Account)
+	if len(profile.AndroidID) != 16 {
+		t.Fatalf("unexpected android id length: %q", profile.AndroidID)
+	}
+	if len(profile.MACAddress) != 17 {
+		t.Fatalf("unexpected mac length: %q", profile.MACAddress)
+	}
+	if len(profile.IMEI) != 15 {
+		t.Fatalf("unexpected imei length: %q", profile.IMEI)
+	}
+	if len(profile.RuntimeUDID) != 36 {
+		t.Fatalf("unexpected runtime udid length: %q", profile.RuntimeUDID)
+	}
+	if len(profile.UserProfileUDID) != 37 {
+		t.Fatalf("unexpected user profile udid length: %q", profile.UserProfileUDID)
+	}
+	if len(profile.CurBuvid) != 37 {
+		t.Fatalf("unexpected buvid length: %q", profile.CurBuvid)
 	}
 }

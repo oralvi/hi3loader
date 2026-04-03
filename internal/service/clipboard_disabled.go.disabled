@@ -1,0 +1,32 @@
+package service
+
+/*
+Clipboard scanning is intentionally disabled in release builds.
+The window capture flow remains active; this file keeps the old backend
+entrypoints around as source reference without compiling them.
+
+Previous clipboard path overview:
+
+func (s *Service) ScanClipboardOnce(ctx context.Context) (bool, error) {
+	return s.scanClipboardOnce(ctx, false)
+}
+
+func (s *Service) initClipboard() {
+	// Used golang.design/x/clipboard to initialize image clipboard access,
+	// cache the initial image hash, and avoid instant duplicate detection.
+}
+
+func (s *Service) scanClipboardOnce(ctx context.Context, silent bool) (bool, error) {
+	// 1. Ensure the Bilibili session and loader API config are ready.
+	// 2. Read clipboard image bytes via clipboard.Read(clipboard.FmtImage).
+	// 3. Hash the bytes to suppress duplicate scans while polling.
+	// 4. Decode ticket/rawURL from the image with qr.DecodeTicketFromBytes.
+	// 5. Forward the ticket into consumeTicketResult and clear the clipboard.
+	return false, nil
+}
+
+The public build no longer links clipboard support, so:
+- there is no clipboard button in the UI
+- there is no clipboard auto-scan toggle in settings
+- the Go binary no longer imports golang.design/x/clipboard
+*/

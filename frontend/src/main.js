@@ -9,8 +9,6 @@ import {
   LaunchGame,
   LogSnapshot,
   Login,
-  ManualFetchBiliHitoken,
-  ManualRefreshDispatch,
   PauseMonitor,
   ResetQuitFlag,
   ResetBackground,
@@ -18,8 +16,6 @@ import {
   ResumeMonitor,
   SaveCredentialSettings,
   SaveFeatureSettings,
-  ScanClipboard,
-  ScanURL,
   ScanWindow,
   SelectSavedAccount,
   UpdateBackground,
@@ -30,15 +26,9 @@ const shellBaseWidth = 1440;
 const shellBaseHeight = 920;
 const sensitiveKeys = new Set([
   "password",
-  "hi3uid",
-  "bilihitoken",
-  "bili_hitoken",
   "access_key",
-  "combo_token",
-  "accounttoken",
-  "account_token",
 ]);
-const largeBlobKeys = new Set(["dispatch_data"]);
+const largeBlobKeys = new Set();
 
 void async function main() {
 await initI18n();
@@ -51,7 +41,7 @@ document.querySelector("#app").innerHTML = `
         <article class="status-card">
           <div class="status-head">
             <span class="status-dot" id="appDot"></span>
-            <span class="status-name">${t("topbar.monitor")}</span>
+            <span class="status-name">${t("topbar.window")}</span>
           </div>
           <strong class="status-value" id="appValue">${t("topbar.starting")}</strong>
         </article>
@@ -65,9 +55,9 @@ document.querySelector("#app").innerHTML = `
         <article class="status-card">
           <div class="status-head">
             <span class="status-dot" id="dispatchDot"></span>
-            <span class="status-name">${t("topbar.dispatchLabel")}</span>
+            <span class="status-name">${t("topbar.api")}</span>
           </div>
-          <strong class="status-value" id="dispatchValue">${t("topbar.dispatchPending")}</strong>
+          <strong class="status-value" id="dispatchValue">${t("topbar.apiPending")}</strong>
         </article>
         <article class="status-card">
           <div class="status-head">
@@ -90,10 +80,9 @@ document.querySelector("#app").innerHTML = `
     <section class="workspace">
       <article class="panel action-panel">
         <div class="panel-head action-head">
-          <div>
+        <div>
             <h2>${t("action.brand")}</h2>
           </div>
-          <div class="action-pill" id="versionPill">${t("action.versionPending")}</div>
         </div>
 
         <div class="info-grid info-grid-compact">
@@ -109,23 +98,9 @@ document.querySelector("#app").innerHTML = `
 
         <div class="action-stack">
           <div class="primary-actions">
-            <button class="button action-button primary-button" id="scanClipboardBtn" type="button">${t("action.scanClipboard")}</button>
             <button class="button action-button primary-button" id="scanWindowBtn" type="button">${t("action.scanWindow")}</button>
           </div>
-          <div class="utility-actions">
-            <button class="button action-button utility-button" id="manualDispatchBtn" type="button">${t("action.refreshDispatch")}</button>
-            <button class="button action-button utility-button" id="manualFetchTokenBtn" type="button">${t("action.fetchBiliHitoken")}</button>
-          </div>
         </div>
-
-        <details class="manual-details">
-          <summary>${t("action.manualLink")}</summary>
-          <label class="field manual-field">
-            <span>${t("action.qrLink")}</span>
-            <textarea id="urlInput" rows="3" placeholder="${t("action.qrLinkPlaceholder")}"></textarea>
-          </label>
-          <button class="button button-ghost manual-button" id="scanUrlBtn" type="button">${t("action.submitLink")}</button>
-        </details>
 
         <div class="response-box" id="responseBox">${t("action.responsePlaceholder")}</div>
       </article>
@@ -178,14 +153,6 @@ document.querySelector("#app").innerHTML = `
             <button class="account-status-button" id="accountStatusBtn" type="button">${t("auth.status.none")}</button>
           </label>
           <label class="field settings-card">
-            <span>${t("settings.hi3uid")}</span>
-            <input id="hi3uidInput" autocomplete="off" placeholder="${t("settings.hi3uidPlaceholder")}" />
-          </label>
-          <label class="field settings-card">
-            <span>${t("settings.biliHitoken")}</span>
-            <input id="biliHitokenInput" autocomplete="off" placeholder="${t("settings.biliHitokenPlaceholder")}" />
-          </label>
-          <label class="field settings-card">
             <span>${t("settings.nickname")}</span>
             <input id="asteriskNameInput" autocomplete="off" placeholder="${t("settings.nicknamePlaceholder")}" />
           </label>
@@ -198,6 +165,10 @@ document.querySelector("#app").innerHTML = `
               </button>
               <div class="locale-menu" id="localeMenu" role="listbox" hidden></div>
             </div>
+          </label>
+          <label class="field settings-card settings-card-span">
+            <span>${t("settings.apiAddress")}</span>
+            <input id="loaderApiInput" autocomplete="off" placeholder="${t("settings.apiAddressPlaceholder")}" />
           </label>
         </div>
 
@@ -244,14 +215,7 @@ document.querySelector("#app").innerHTML = `
             </span>
           </label>
           <label class="toggle">
-            <input id="clipCheckInput" type="checkbox" />
-            <span class="toggle-control" aria-hidden="true"></span>
-            <span class="toggle-copy">
-              <strong>${t("settings.clipboardTitle")}</strong>
-            </span>
-          </label>
-          <label class="toggle">
-            <input id="autoClipInput" type="checkbox" />
+            <input id="autoWindowCaptureInput" type="checkbox" />
             <span class="toggle-control" aria-hidden="true"></span>
             <span class="toggle-copy">
               <strong>${t("settings.windowTitle")}</strong>
@@ -330,7 +294,6 @@ const elements = {
   dispatchValue: document.getElementById("dispatchValue"),
   gameDot: document.getElementById("gameDot"),
   gameValue: document.getElementById("gameValue"),
-  versionPill: document.getElementById("versionPill"),
   actionValue: document.getElementById("actionValue"),
   errorValue: document.getElementById("errorValue"),
   accountPicker: document.getElementById("accountPicker"),
@@ -340,9 +303,8 @@ const elements = {
   editAccountBtn: document.getElementById("editAccountBtn"),
   addAccountBtn: document.getElementById("addAccountBtn"),
   accountStatusBtn: document.getElementById("accountStatusBtn"),
-  hi3uidInput: document.getElementById("hi3uidInput"),
-  biliHitokenInput: document.getElementById("biliHitokenInput"),
   asteriskNameInput: document.getElementById("asteriskNameInput"),
+  loaderApiInput: document.getElementById("loaderApiInput"),
   localePicker: document.getElementById("localePicker"),
   localeTrigger: document.getElementById("localeTrigger"),
   localeValue: document.getElementById("localeValue"),
@@ -353,10 +315,8 @@ const elements = {
   backgroundStatusValue: document.getElementById("backgroundStatusValue"),
   pathHintValue: document.getElementById("pathHintValue"),
   panelBlurInput: document.getElementById("panelBlurInput"),
-  clipCheckInput: document.getElementById("clipCheckInput"),
-  autoClipInput: document.getElementById("autoClipInput"),
+  autoWindowCaptureInput: document.getElementById("autoWindowCaptureInput"),
   autoCloseInput: document.getElementById("autoCloseInput"),
-  urlInput: document.getElementById("urlInput"),
   responseBox: document.getElementById("responseBox"),
   logList: document.getElementById("logList"),
   launchGameBtn: document.getElementById("launchGameBtn"),
@@ -368,11 +328,7 @@ const elements = {
   browseBackgroundBtn: document.getElementById("browseBackgroundBtn"),
   resetBackgroundBtn: document.getElementById("resetBackgroundBtn"),
   saveBtn: document.getElementById("saveBtn"),
-  scanUrlBtn: document.getElementById("scanUrlBtn"),
-  scanClipboardBtn: document.getElementById("scanClipboardBtn"),
   scanWindowBtn: document.getElementById("scanWindowBtn"),
-  manualDispatchBtn: document.getElementById("manualDispatchBtn"),
-  manualFetchTokenBtn: document.getElementById("manualFetchTokenBtn"),
   captchaOverlay: document.getElementById("captchaOverlay"),
   captchaFrame: document.getElementById("captchaFrame"),
   captchaCopy: document.getElementById("captchaCopy"),
@@ -405,8 +361,6 @@ const seenLogKeys = new Set();
 const autofillGuardNames = Object.freeze({
   account: "ctl_contact_ref",
   password: "ctl_access_phrase",
-  hi3uid: "ctl_release_ref",
-  biliHitoken: "ctl_dispatch_ref",
 });
 const windowScanHintCodes = new Set([
   "backend.hint.qr_expand_manual",
@@ -470,8 +424,6 @@ function installAutofillGuard(input, nameHint, { inputMode = "" } = {}) {
 
 installAutofillGuard(elements.loginAccountInput, autofillGuardNames.account);
 installAutofillGuard(elements.loginPasswordInput, autofillGuardNames.password);
-installAutofillGuard(elements.hi3uidInput, autofillGuardNames.hi3uid, { inputMode: "numeric" });
-installAutofillGuard(elements.biliHitokenInput, autofillGuardNames.biliHitoken);
 
 const secretFieldMeta = {
   password: {
@@ -480,24 +432,10 @@ const secretFieldMeta = {
     maskKey: "masked_password",
     defaultPlaceholder: elements.loginPasswordInput.getAttribute("placeholder") || "",
   },
-  hi3uid: {
-    input: elements.hi3uidInput,
-    hasKey: "has_hi3uid",
-    maskKey: "masked_hi3uid",
-    defaultPlaceholder: elements.hi3uidInput.getAttribute("placeholder") || "",
-  },
-  biliHitoken: {
-    input: elements.biliHitokenInput,
-    hasKey: "has_bilihitoken",
-    maskKey: "masked_bilihitoken",
-    defaultPlaceholder: elements.biliHitokenInput.getAttribute("placeholder") || "",
-  },
 };
 
 const secretFieldDirty = {
   password: false,
-  hi3uid: false,
-  biliHitoken: false,
 };
 
 function asText(value, fallback = "none") {
@@ -525,15 +463,9 @@ function sanitizeText(text) {
   let output = String(text ?? "");
   const replacements = [
     [/(\"password\"\s*:\s*\")([^\"]*)(\")/gi, "$1***$3"],
-    [/(\"hi3uid\"\s*:\s*\")([^\"]*)(\")/gi, (_, prefix, value, suffix) => `${prefix}${maskSecret(value)}${suffix}`],
-    [/(\"biliHitoken\"\s*:\s*\")([^\"]*)(\")/gi, (_, prefix, value, suffix) => `${prefix}${maskSecret(value)}${suffix}`],
-    [/(\"BILIHITOKEN\"\s*:\s*\")([^\"]*)(\")/gi, (_, prefix, value, suffix) => `${prefix}${maskSecret(value)}${suffix}`],
     [/(\"access_key\"\s*:\s*\")([^\"]*)(\")/gi, "$1***$3"],
-    [/(\"combo_token\"\s*:\s*\")([^\"]*)(\")/gi, "$1***$3"],
-    [/(\"accountToken\"\s*:\s*\")([^\"]*)(\")/gi, "$1***$3"],
     [/(\bpassword=)([^&\s]+)/gi, "$1***"],
     [/(\baccess_key=)([^&\s]+)/gi, "$1***"],
-    [/(\bcombo_token=)([^&\s]+)/gi, "$1***"],
   ];
 
   replacements.forEach(([pattern, replacement]) => {
@@ -740,16 +672,8 @@ function opacityPercentToSlider(percent) {
   return Math.round((normalized - 20) / 0.8);
 }
 
-function hasSecretValue(key, cfg = latestConfigView) {
-  const meta = secretFieldMeta[key];
-  if (!meta) {
-    return false;
-  }
-  return Boolean(String(meta.input.value ?? "").trim()) || Boolean(cfg?.[meta.hasKey]);
-}
-
 function refreshDraftActionState(cfg = latestConfigView) {
-  elements.manualDispatchBtn.disabled = !hasSecretValue("hi3uid", cfg) || !hasSecretValue("biliHitoken", cfg);
+  void cfg;
 }
 
 function hasCachedSessionState(cfg) {
@@ -835,6 +759,26 @@ function formatLocaleLabel(locale) {
     return translated;
   }
   return locale;
+}
+
+function normalizeLoaderAPIAddress(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return "";
+  }
+  if (/^https:\/\//i.test(raw)) {
+    return raw;
+  }
+  if (/^http:\/\//i.test(raw)) {
+    return `https://${raw.replace(/^http:\/\//i, "")}`;
+  }
+  if (/^[a-z][a-z\d+\-.]*:\/\//i.test(raw)) {
+    return raw;
+  }
+  if (raw.startsWith("//")) {
+    return `https:${raw}`;
+  }
+  return `https://${raw}`;
 }
 
 function setLocaleTriggerLabel(locale) {
@@ -1070,11 +1014,20 @@ function formatErrorValue(value, messageRef = null) {
   return sanitizeText(text);
 }
 
-function formatDispatchStatus(state, cfg) {
-  const hasDispatch = Boolean(String(state.dispatchSource ?? "").trim()) || Boolean(cfg.has_dispatch_data);
-  return hasDispatch
-    ? { tone: "ok", text: t("status.cached") }
-    : { tone: "error", text: t("status.requestRequired") };
+function formatAPIStatus(state, cfg) {
+  const apiAddress = String(cfg.loader_api_base_url ?? cfg.loaderApiBaseURL ?? "").trim();
+  if (!apiAddress) {
+    return { tone: "error", text: t("topbar.notSet") };
+  }
+  return state.apiReady
+    ? { tone: "ok", text: t("status.connected") }
+    : { tone: "error", text: t("status.unavailable") };
+}
+
+function formatWindowStatus(state) {
+  return state.running
+    ? { tone: "ok", text: t("status.monitoring") }
+    : { tone: "error", text: t("status.idle") };
 }
 
 function formatSessionStatus(state, cfg) {
@@ -1136,8 +1089,7 @@ function renderState(state) {
   latestState = state || null;
   const cfg = state.config || {};
   latestConfigView = cfg;
-  const clipCheck = Boolean(cfg.clip_check ?? cfg.clipCheck);
-  const autoClip = Boolean(cfg.auto_clip ?? cfg.autoClip);
+  const autoWindowCapture = Boolean(cfg.auto_window_capture ?? cfg.autoWindowCapture);
   const autoClose = Boolean(cfg.auto_close ?? cfg.autoClose);
   const gamePath = cfg.game_path ?? cfg.gamePath ?? "";
   const hasBackgroundImage = Boolean(cfg.has_background_image ?? cfg.hasBackgroundImage);
@@ -1145,26 +1097,20 @@ function renderState(state) {
     Math.max(20, Math.min(100, Number(cfg.background_opacity ?? cfg.backgroundOpacity ?? 0.35) * 100)),
   );
   const panelBlur = cfg.panel_blur ?? cfg.panelBlur ?? true;
+  const windowStatus = formatWindowStatus(state);
   const session = formatSessionStatus(state, cfg);
-  const dispatch = formatDispatchStatus(state, cfg);
-  const versionText = String(cfg.bh_ver ?? cfg.bhVer ?? "").trim();
+  const api = formatAPIStatus(state, cfg);
   const gameTone = state.gamePathValid ? "ok" : "warn";
   const gameText = state.gamePathValid
-    ? t("status.gameConfigured", { version: versionText }).trim()
+    ? t("common.configured")
     : gamePath
       ? t("status.gameNeedsFix")
       : t("status.gameOptional");
 
-  setStatus(
-    elements.appDot,
-    elements.appValue,
-    appBootstrapped ? "ok" : "error",
-    state.running ? t("status.monitoring") : t("status.idle"),
-  );
+  setStatus(elements.appDot, elements.appValue, appBootstrapped ? windowStatus.tone : "error", windowStatus.text);
   setStatus(elements.sessionDot, elements.sessionValue, session.tone, session.text);
-  setStatus(elements.dispatchDot, elements.dispatchValue, dispatch.tone, dispatch.text);
+  setStatus(elements.dispatchDot, elements.dispatchValue, api.tone, api.text);
   setStatus(elements.gameDot, elements.gameValue, gameTone, gameText);
-  elements.versionPill.textContent = versionText ? `BHVer ${versionText}` : t("action.versionPending");
 
   elements.actionValue.textContent = formatActionValue(state.lastAction);
   const pathHintText = translateMessage(state.gamePathMessage, state.gamePathPrompt || "");
@@ -1185,9 +1131,8 @@ function renderState(state) {
   }
 
   syncSecretInput("password", cfg);
-  syncSecretInput("hi3uid", cfg);
-  syncSecretInput("biliHitoken", cfg);
   syncInputValue(elements.asteriskNameInput, cfg.asterisk_name ?? cfg.asteriskName ?? "");
+  syncInputValue(elements.loaderApiInput, normalizeLoaderAPIAddress(cfg.loader_api_base_url ?? cfg.loaderApiBaseURL ?? ""));
   syncInputValue(elements.gamePathInput, gamePath);
   syncRangeValue(elements.backgroundOpacityInput, opacityPercentToSlider(backgroundOpacity));
   previewOpacity(opacityPercentToSlider(backgroundOpacity));
@@ -1204,8 +1149,7 @@ function renderState(state) {
     elements.customBackground.style.backgroundImage = "";
   }
   if (elements.settingsSheet.hidden) {
-    elements.clipCheckInput.checked = clipCheck;
-    elements.autoClipInput.checked = autoClip;
+    elements.autoWindowCaptureInput.checked = autoWindowCapture;
     elements.autoCloseInput.checked = autoClose;
   }
   elements.launchGameBtn.disabled = !state.gamePathValid;
@@ -1228,43 +1172,31 @@ function formatError(error) {
 }
 
 async function persistSettings({ showToast = true, closeSheet = false } = {}) {
-  const secretKeysToReset = [];
   const currentCfg = latestConfigView || {};
   const currentNickname = String(currentCfg.asterisk_name ?? currentCfg.asteriskName ?? "").trim();
   const nextNickname = String(elements.asteriskNameInput.value ?? "").trim();
-  const currentHI3UID = String(currentCfg.hi3uid ?? currentCfg.HI3UID ?? "").trim();
-  const currentBiliHitoken = String(currentCfg.biliHitoken ?? currentCfg.BILIHITOKEN ?? "").trim();
-  const nextHI3UID = secretFieldDirty.hi3uid ? String(elements.hi3uidInput.value || "").trim() : currentHI3UID;
-  const nextBiliHitoken = secretFieldDirty.biliHitoken ? String(elements.biliHitokenInput.value || "").trim() : currentBiliHitoken;
-  const needsCredentialSave =
-    nextNickname !== currentNickname ||
-    secretFieldDirty.hi3uid ||
-    secretFieldDirty.biliHitoken;
+  const currentLoaderAPI = normalizeLoaderAPIAddress(currentCfg.loader_api_base_url ?? currentCfg.loaderApiBaseURL ?? "");
+  const nextLoaderAPI = normalizeLoaderAPIAddress(elements.loaderApiInput.value ?? "");
+  const needsCredentialSave = nextNickname !== currentNickname || nextLoaderAPI !== currentLoaderAPI;
 
-  if (secretFieldDirty.hi3uid) {
-    secretKeysToReset.push("hi3uid");
-  }
-  if (secretFieldDirty.biliHitoken) {
-    secretKeysToReset.push("biliHitoken");
+  if (String(elements.loaderApiInput.value ?? "").trim() !== nextLoaderAPI) {
+    elements.loaderApiInput.value = nextLoaderAPI;
   }
 
-  const nextClipCheck = elements.clipCheckInput.checked;
   const nextAutoClose = elements.autoCloseInput.checked;
-  const nextAutoClip = elements.autoClipInput.checked;
+  const nextAutoWindowCapture = elements.autoWindowCaptureInput.checked;
   const nextPanelBlur = elements.panelBlurInput.checked;
   const nextGamePath = elements.gamePathInput.value || "";
-  const currentClipCheck = Boolean(currentCfg.clip_check ?? currentCfg.clipCheck);
   const currentAutoClose = Boolean(currentCfg.auto_close ?? currentCfg.autoClose);
-  const currentAutoClip = Boolean(currentCfg.auto_clip ?? currentCfg.autoClip);
+  const currentAutoWindowCapture = Boolean(currentCfg.auto_window_capture ?? currentCfg.autoWindowCapture);
   const currentPanelBlur = Boolean(currentCfg.panel_blur ?? currentCfg.panelBlur ?? true);
   const currentGamePath = String(currentCfg.game_path ?? currentCfg.gamePath ?? "");
   const nextOpacity = sliderToOpacityPercent(elements.backgroundOpacityInput.value) / 100;
   const currentOpacity = Number(currentCfg.background_opacity ?? currentCfg.backgroundOpacity ?? 0.35);
   const needsFeatureSave =
     nextGamePath !== currentGamePath ||
-    nextClipCheck !== currentClipCheck ||
     nextAutoClose !== currentAutoClose ||
-    nextAutoClip !== currentAutoClip ||
+    nextAutoWindowCapture !== currentAutoWindowCapture ||
     nextPanelBlur !== currentPanelBlur ||
     Math.abs(nextOpacity - currentOpacity) > 0.0001;
 
@@ -1278,14 +1210,7 @@ async function persistSettings({ showToast = true, closeSheet = false } = {}) {
   let state = null;
   if (needsCredentialSave) {
     const savedState = await runTask(
-      () =>
-        SaveCredentialSettings(
-          nextHI3UID,
-          secretFieldDirty.hi3uid,
-          nextBiliHitoken,
-          secretFieldDirty.biliHitoken,
-          nextNickname,
-        ),
+      () => SaveCredentialSettings(nextNickname, nextLoaderAPI),
       null,
       "soft",
     );
@@ -1297,7 +1222,7 @@ async function persistSettings({ showToast = true, closeSheet = false } = {}) {
 
   if (needsFeatureSave) {
     state = await runTask(
-      () => SaveFeatureSettings(nextGamePath, nextClipCheck, nextAutoClose, nextAutoClip, nextPanelBlur, nextOpacity),
+      () => SaveFeatureSettings(nextGamePath, nextAutoClose, nextAutoWindowCapture, nextPanelBlur, nextOpacity),
       showToast ? () => ({ saved: true, gamePath: nextGamePath || null }) : null,
     );
     if (!state) {
@@ -1306,23 +1231,18 @@ async function persistSettings({ showToast = true, closeSheet = false } = {}) {
   }
 
   if (state) {
+    appBootstrapped = true;
     renderState(state);
     if (needsFeatureSave) {
       await refreshBackground();
     }
   }
 
-  secretKeysToReset.forEach((key) => markSecretFieldClean(key));
-  elements.hi3uidInput.value = "";
-  elements.biliHitokenInput.value = "";
-
   if (showToast) {
     const cfg = (state?.config) || latestConfigView || {};
     showPayload(
       {
         saved: true,
-        hi3uid: cfg.masked_hi3uid || "cleared",
-        biliHitoken: cfg.masked_bilihitoken || "cleared",
         nickname: cfg.asterisk_name ?? cfg.asteriskName ?? null,
         gamePath: cfg.game_path ?? cfg.gamePath ?? null,
       },
@@ -1356,6 +1276,12 @@ elements.settingsCloseBtn.addEventListener("click", async () => {
 elements.settingsBackdrop.addEventListener("click", async () => {
   await persistSettings({ showToast: false, closeSheet: true });
 });
+elements.loaderApiInput.addEventListener("blur", () => {
+  const normalized = normalizeLoaderAPIAddress(elements.loaderApiInput.value ?? "");
+  if (normalized !== String(elements.loaderApiInput.value ?? "").trim()) {
+    elements.loaderApiInput.value = normalized;
+  }
+});
 elements.localeTrigger.addEventListener("click", () => {
   if (elements.localeMenu.hidden) {
     openLocaleMenu();
@@ -1378,15 +1304,6 @@ document.addEventListener("pointerdown", (event) => {
     closeAccountMenu();
   }
 });
-elements.hi3uidInput.addEventListener("input", () => {
-  markSecretFieldDirty("hi3uid");
-  refreshDraftActionState();
-});
-elements.biliHitokenInput.addEventListener("input", () => {
-  markSecretFieldDirty("biliHitoken");
-  refreshDraftActionState();
-});
-
 elements.browseGamePathBtn.addEventListener("click", async () => {
   const selected = await runTask(
     () => BrowseGamePath(),
@@ -1400,9 +1317,8 @@ elements.browseGamePathBtn.addEventListener("click", async () => {
     () =>
       SaveFeatureSettings(
         selected,
-        elements.clipCheckInput.checked,
         elements.autoCloseInput.checked,
-        elements.autoClipInput.checked,
+        elements.autoWindowCaptureInput.checked,
         elements.panelBlurInput.checked,
         sliderToOpacityPercent(elements.backgroundOpacityInput.value) / 100,
       ),
@@ -1450,9 +1366,8 @@ elements.backgroundOpacityInput.addEventListener("change", async () => {
     () =>
       SaveFeatureSettings(
         String(cfg.game_path ?? cfg.gamePath ?? ""),
-        Boolean(cfg.clip_check ?? cfg.clipCheck),
         Boolean(cfg.auto_close ?? cfg.autoClose),
-        Boolean(cfg.auto_clip ?? cfg.autoClip),
+        Boolean(cfg.auto_window_capture ?? cfg.autoWindowCapture),
         Boolean(cfg.panel_blur ?? cfg.panelBlur ?? true),
         percent / 100,
       ),
@@ -1568,33 +1483,6 @@ elements.launchGameBtn.addEventListener("click", async () => {
   }
 });
 
-elements.scanUrlBtn.addEventListener("click", async () => {
-  await runTask(() => ScanURL(elements.urlInput.value), (value) => value);
-});
-
-elements.manualDispatchBtn.addEventListener("click", async () => {
-  const hi3uid = elements.hi3uidInput.value || "";
-  const biliHitoken = elements.biliHitokenInput.value || "";
-  const state = await runTask(
-    () => ManualRefreshDispatch(hi3uid, biliHitoken),
-    (value) => value,
-  );
-  if (state) {
-    renderState(state);
-  }
-});
-
-elements.manualFetchTokenBtn.addEventListener("click", async () => {
-  const state = await runTask(() => ManualFetchBiliHitoken(), (value) => value);
-  if (state) {
-    renderState(state);
-  }
-});
-
-elements.scanClipboardBtn.addEventListener("click", async () => {
-  await runTask(() => ScanClipboard(), (matched) => ({ matched }), "soft");
-});
-
 elements.scanWindowBtn.addEventListener("click", async () => {
   const result = await runTask(() => ScanWindow(), null, "soft");
   if (result === null) {
@@ -1664,11 +1552,11 @@ Bootstrap()
       return;
     }
     showPayload(
-      {
-        session: formatSessionStatus(state, state.config || {}).text,
-        dispatch: formatDispatchStatus(state, state.config || {}).text,
-      },
-      "soft",
+        {
+          session: formatSessionStatus(state, state.config || {}).text,
+          api: formatAPIStatus(state, state.config || {}).text,
+        },
+        "soft",
     );
   })
   .catch((error) => {

@@ -4,8 +4,10 @@ Portable Wails desktop utility for local workflows.
 
 ## Overview
 
-- Small Wails GUI with a local-only workflow.
-- Window QR capture stays conservative: it detects common login-panel states and prompts manual action when QR login is not open or the QR has expired.
+- Windows desktop GUI built with Wails.
+- Supports local account management, game launch, and QR handling from the game window.
+- Uses a configurable local or remote endpoint for runtime requests.
+- Keeps window QR capture conservative and favors clear manual guidance when the QR state is not ready.
 
 ## Attribution
 
@@ -35,19 +37,9 @@ cd ..
 wails dev
 ```
 
-### Development builds
-
-Use the development build script if you want a local package to test.
-
-```powershell
-.\scripts\build-dev.ps1
-```
-
 Notes:
 
-- The GUI entrypoint runs in helper-only mode. Sensitive login, token, dispatch, and scan flows are delegated to a short-lived local helper subprocess.
-- Direct helper startup is intentionally blocked unless it is launched by the main program with a valid session token.
-- Script and non-GUI entrypoints still keep in-process fallback for local development workflows.
+- The GUI performs local Bilibili account login and talks to the configured endpoint for runtime requests.
 - Fresh clones must build the frontend first because `main.go` embeds `frontend/dist`.
 - Development package names and title stamps use `dev+<random>+<yyMMddHHmmss>`.
 
@@ -60,19 +52,17 @@ npm run build
 cd ..
 ```
 
-### Script / fallback workflows
+### Development builds
 
-Some local scripts are still expected to run outside the GUI path. Example:
+Use the development build script if you want a local package to test.
 
 ```powershell
-go run ./scripts/manual_fetch_bili.go
+.\scripts\build-dev.ps1
 ```
-
-Those paths keep development-friendly fallback behavior and are not treated as release-hardened entrypoints.
 
 ## Release Build
 
-Use the release script instead of calling `wails build` manually:
+Use the release script for packaged builds:
 
 ```powershell
 .\scripts\build-release.ps1
@@ -80,23 +70,19 @@ Use the release script instead of calling `wails build` manually:
 
 What the release script does:
 
-- auto-detects whether `private_impl` is available
-- builds with `-ldflags "-s -w"` to strip symbol/debug metadata
+- builds with stripped symbol/debug metadata
 - produces the packaged GUI binary in `build/bin`
 - adds a release title stamp in the form `r<yyMMddHHmmss>`
 
 Release behavior:
 
-- GUI release is helper-only
-- if helper startup or helper authorization fails, sensitive GUI actions fail closed instead of falling back to in-process direct calls
-- development scripts are not changed by this and may still use fallback logic
+- GUI release is Windows-only
 - game-window QR handling favors stable detection and manual guidance over simulated clicks inside the Unity client
 
 ## Repository Notes
 
-- `.gitignore` intentionally excludes portable runtime data, build output, generated bindings, etc..
-- The public repository is expected to compile in stub mode when private files are absent, but `frontend/dist` still needs to be generated locally before `go test ./...`, `go build`, or `wails build` can compile the `main` package.
-- Private local implementations are intentionally not tracked in the public repository.
+- `.gitignore` intentionally excludes portable runtime data, build output, and generated bindings.
+- `frontend/dist` still needs to be generated locally before `go test ./...`, `go build`, or `wails build` can compile the `main` package.
 
 ## License
 

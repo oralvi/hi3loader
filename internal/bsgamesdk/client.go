@@ -8,14 +8,13 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net/http"
 	"net/url"
-	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"hi3loader/internal/config"
@@ -26,10 +25,13 @@ var providerBase = providerBaseURL()
 
 type Client struct {
 	http *http.Client
+	mu   sync.RWMutex
+
+	runtimeProfile RuntimeProfile
+	deviceProfile  DeviceProfile
 }
 
 type payloadTemplate struct {
-	raw   string
 	data  map[string]any
 	order []string
 }
@@ -38,17 +40,22 @@ func NewClient() *Client {
 	return &Client{http: netutil.NewClient()}
 }
 
+func (c *Client) SetProfile(runtime RuntimeProfile, device DeviceProfile) {
+	c.mu.Lock()
+	c.runtimeProfile = runtime
+	c.deviceProfile = device
+	c.mu.Unlock()
+}
+
 func (c *Client) GetUserInfo(ctx context.Context, uid, accessKey string) (map[string]any, error) {
-	payload, err := parsePayloadTemplate(userProfileEnvelopeRaw)
-	if err != nil {
-		return nil, fmt.Errorf("load user info template: %w", err)
-	}
+	profile := c.effectiveProfile()
+	payload := userProfileTemplate(profile)
 	payload.data["uid"] = uid
 	payload.data["access_key"] = accessKey
-	body := payload.SetSign()
+	body := payload.SetSign(profile.SignatureMaterial)
 
 	resp := map[string]any{}
-	err = netutil.PostBodyJSON(ctx, c.http, providerBase+"/api/client/user.info", body, defaultHeaders(), &resp)
+	err := netutil.PostBodyJSON(ctx, c.http, providerBase+"/api/client/user.info", body, defaultHeaders(), &resp)
 	return resp, err
 }
 
@@ -69,14 +76,12 @@ func (c *Client) Login(ctx context.Context, account, password string, cap map[st
 }
 
 func (c *Client) StartCaptcha(ctx context.Context) (map[string]any, error) {
-	payload, err := parsePayloadTemplate(challengeEnvelopeRaw)
-	if err != nil {
-		return nil, fmt.Errorf("load captcha template: %w", err)
-	}
-	body := payload.SetSign()
+	profile := c.effectiveProfile()
+	payload := challengeTemplate(profile)
+	body := payload.SetSign(profile.SignatureMaterial)
 
 	resp := map[string]any{}
-	err = netutil.PostBodyJSON(ctx, c.http, providerBase+"api/client/start_captcha", body, defaultHeaders(), &resp)
+	err := netutil.PostBodyJSON(ctx, c.http, providerBase+"api/client/start_captcha", body, defaultHeaders(), &resp)
 	return resp, err
 }
 
@@ -89,15 +94,13 @@ func MakeCaptchaURL(callbackAddr, gt, challenge, userID string) string {
 }
 
 func (c *Client) loginWithoutCaptcha(ctx context.Context, account, password string) (map[string]any, error) {
+	profile := c.effectiveProfile()
 	rsaResp, err := c.requestRSA(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	payload, err := parsePayloadTemplate(credentialEnvelopeRaw)
-	if err != nil {
-		return nil, fmt.Errorf("load login template: %w", err)
-	}
+	payload := credentialTemplate(profile)
 	payload.data["access_key"] = ""
 	payload.data["gt_user_id"] = ""
 	payload.data["uid"] = ""
@@ -110,7 +113,7 @@ func (c *Client) loginWithoutCaptcha(ctx context.Context, account, password stri
 		return nil, err
 	}
 	payload.data["pwd"] = encrypted
-	body := payload.SetSign()
+	body := payload.SetSign(profile.SignatureMaterial)
 
 	resp := map[string]any{}
 	err = netutil.PostBodyJSON(ctx, c.http, providerBase+"api/client/login", body, defaultHeaders(), &resp)
@@ -118,15 +121,13 @@ func (c *Client) loginWithoutCaptcha(ctx context.Context, account, password stri
 }
 
 func (c *Client) loginWithCaptcha(ctx context.Context, account, password string, cap map[string]any) (map[string]any, error) {
+	profile := c.effectiveProfile()
 	rsaResp, err := c.requestRSA(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	payload, err := parsePayloadTemplate(credentialEnvelopeRaw)
-	if err != nil {
-		return nil, fmt.Errorf("load login template: %w", err)
-	}
+	payload := credentialTemplate(profile)
 	payload.data["access_key"] = ""
 	payload.data["gt_user_id"] = config.StringValue(cap["userid"])
 	payload.data["uid"] = ""
@@ -140,7 +141,7 @@ func (c *Client) loginWithCaptcha(ctx context.Context, account, password string,
 		return nil, err
 	}
 	payload.data["pwd"] = encrypted
-	body := payload.SetSign()
+	body := payload.SetSign(profile.SignatureMaterial)
 
 	resp := map[string]any{}
 	err = netutil.PostBodyJSON(ctx, c.http, providerBase+"api/client/login", body, defaultHeaders(), &resp)
@@ -148,14 +149,12 @@ func (c *Client) loginWithCaptcha(ctx context.Context, account, password string,
 }
 
 func (c *Client) requestRSA(ctx context.Context) (map[string]any, error) {
-	payload, err := parsePayloadTemplate(keyEnvelopeRaw)
-	if err != nil {
-		return nil, fmt.Errorf("load rsa template: %w", err)
-	}
-	body := payload.SetSign()
+	profile := c.effectiveProfile()
+	payload := keyTemplate(profile)
+	body := payload.SetSign(profile.SignatureMaterial)
 
 	resp := map[string]any{}
-	err = netutil.PostBodyJSON(ctx, c.http, providerBase+"api/client/rsa", body, defaultHeaders(), &resp)
+	err := netutil.PostBodyJSON(ctx, c.http, providerBase+"api/client/rsa", body, defaultHeaders(), &resp)
 	return resp, err
 }
 
@@ -204,33 +203,7 @@ func pythonQuote(value string) string {
 	return escaped
 }
 
-func parsePayloadTemplate(raw string) (payloadTemplate, error) {
-	data := map[string]any{}
-	if err := json.Unmarshal([]byte(raw), &data); err != nil {
-		return payloadTemplate{}, fmt.Errorf("parse payload template: %w", err)
-	}
-
-	re := regexp.MustCompile(`"([^"]+)":`)
-	matches := re.FindAllStringSubmatch(raw, -1)
-	order := make([]string, 0, len(matches))
-	seen := map[string]struct{}{}
-	for _, match := range matches {
-		key := match[1]
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		order = append(order, key)
-	}
-
-	return payloadTemplate{
-		raw:   raw,
-		data:  data,
-		order: order,
-	}, nil
-}
-
-func (p payloadTemplate) SetSign() string {
+func (p payloadTemplate) SetSign(signatureMaterial string) string {
 	now := int(time.Now().Unix())
 	p.data["timestamp"] = now
 	p.data["client_timestamp"] = now
@@ -264,7 +237,7 @@ func (p payloadTemplate) SetSign() string {
 	for _, key := range signKeys {
 		signBase.WriteString(config.StringValue(p.data[key]))
 	}
-	sum := md5.Sum([]byte(signBase.String() + signatureMaterial()))
+	sum := md5.Sum([]byte(signBase.String() + signatureMaterial))
 	body.WriteString("sign=")
 	body.WriteString(hex.EncodeToString(sum[:]))
 	return body.String()
@@ -280,4 +253,12 @@ func providerBaseURL() string {
 
 func signatureMaterial() string {
 	return strings.Join([]string{"dbf8f1b4496f430b", "8a3c0f436a35b931"}, "")
+}
+
+func (c *Client) effectiveProfile() effectiveSDKProfile {
+	c.mu.RLock()
+	runtime := c.runtimeProfile
+	device := c.deviceProfile
+	c.mu.RUnlock()
+	return buildEffectiveSDKProfile(runtime, device)
 }

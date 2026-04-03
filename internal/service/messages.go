@@ -99,6 +99,8 @@ func fallbackMessageText(ref MessageRef) string {
 		return "Ticket is required."
 	case "backend.error.session_not_ready":
 		return "Game session is not ready; login first."
+	case "backend.error.loader_api_required":
+		return "Loader API address is required. Open Settings and fill in the API address first."
 	case "backend.error.scan_blocked":
 		if reason := ref.Params["reason"]; reason != "" {
 			return fmt.Sprintf("Scan blocked: %s", reason)
@@ -117,19 +119,6 @@ func fallbackMessageText(ref MessageRef) string {
 		default:
 			return "Verify failed."
 		}
-	case "backend.error.dispatch_retcode":
-		if retcode := ref.Params["retcode"]; retcode != "" {
-			return fmt.Sprintf("dispatch retcode=%s", retcode)
-		}
-		return "Dispatch request failed."
-	case "backend.error.dispatch_missing_data":
-		return "Dispatch response is missing data."
-	case "backend.error.dispatch_invalid_blob":
-		return "Dispatch response is not a usable final blob."
-	case "backend.error.empty_bilihitoken":
-		return "Fetched empty BILIHITOKEN."
-	case "backend.error.auto_fetch_bilihitoken_failed":
-		return "Automatic BILIHITOKEN refresh failed. Please fetch it manually."
 	default:
 		return ""
 	}

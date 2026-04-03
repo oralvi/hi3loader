@@ -436,7 +436,7 @@ h2 {
 
 .primary-actions {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.65rem;
 }
 
@@ -455,38 +455,6 @@ h2 {
 .utility-button {
   min-height: 2.55rem;
   border-radius: 1rem;
-}
-
-.manual-details {
-  margin-bottom: 0.8rem;
-  padding: 0.8rem 0.9rem;
-  border-radius: 1rem;
-  background: rgba(24, 33, 47, var(--soft-alpha));
-  border: 1px solid rgba(24, 33, 47, 0.1);
-}
-
-.manual-details summary {
-  cursor: pointer;
-  list-style: none;
-  color: var(--muted);
-  user-select: none;
-  font-weight: 700;
-}
-
-.manual-details summary::-webkit-details-marker {
-  display: none;
-}
-
-.manual-details[open] summary {
-  margin-bottom: 0.75rem;
-}
-
-.manual-field {
-  margin-bottom: 0.65rem;
-}
-
-.manual-button {
-  width: 100%;
 }
 
 .button {

@@ -3,14 +3,13 @@ module hi3loader
 go 1.26
 
 require (
-	github.com/deepteams/webp v1.2.1
 	github.com/lxn/win v0.0.0-20210218163916-a377121e959e
 	github.com/makiuchi-d/gozxing v0.1.1
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/wailsapp/wails/v2 v2.11.0
-	golang.design/x/clipboard v0.7.1
 	golang.org/x/image v0.28.0
 	golang.org/x/sys v0.33.0
+	google.golang.org/protobuf v1.33.0
 )
 
 require (
@@ -37,8 +36,6 @@ require (
 	github.com/wailsapp/go-webview2 v1.0.22 // indirect
 	github.com/wailsapp/mimetype v1.4.1 // indirect
 	golang.org/x/crypto v0.33.0 // indirect
-	golang.org/x/exp/shiny v0.0.0-20250606033433-dcc06ee1d476 // indirect
-	golang.org/x/mobile v0.0.0-20250606033058-a2a15c67f36f // indirect
 	golang.org/x/net v0.35.0 // indirect
 	golang.org/x/text v0.26.0 // indirect
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect

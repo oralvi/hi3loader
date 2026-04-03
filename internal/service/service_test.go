@@ -2,12 +2,29 @@ package service
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/ecdh"
+	"crypto/ed25519"
+	"crypto/hkdf"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/protoadapt"
+	"hi3loader/internal/bridge"
 	"hi3loader/internal/config"
+	"hi3loader/internal/loaderapiv1"
 )
 
 func TestExpirePendingCredentialsClearsCaptchaState(t *testing.T) {
@@ -164,7 +181,6 @@ func TestSelectSavedAccountRestartsMonitorContext(t *testing.T) {
 
 	svc.mu.Lock()
 	svc.recentTickets = map[string]time.Time{"stale": time.Now()}
-	svc.clipboardHash = "hash"
 	svc.windowMissStreak = 3
 	svc.windowStaticStreak = 4
 	svc.windowFingerprint = "fp"
@@ -181,9 +197,6 @@ func TestSelectSavedAccountRestartsMonitorContext(t *testing.T) {
 	if len(svc.recentTickets) != 0 {
 		t.Fatalf("expected recent tickets to be cleared")
 	}
-	if svc.clipboardHash != "" {
-		t.Fatalf("expected clipboard hash to be cleared")
-	}
 	if svc.windowMissStreak != 0 || svc.windowStaticStreak != 0 {
 		t.Fatalf("expected monitor streaks to be reset")
 	}
@@ -195,27 +208,10 @@ func TestSelectSavedAccountRestartsMonitorContext(t *testing.T) {
 	}
 }
 
-func TestBridgeConfigSnapshotPreservesNickname(t *testing.T) {
-	cfg := config.Default()
-	cfg.AsteriskName = "\u4e0d\u60f3\u52a0\u5927\u73ed\u7684\u963f\u51db"
-
-	snapshot := bridgeConfigSnapshot(cfg)
-	if snapshot.AsteriskName != cfg.AsteriskName {
-		t.Fatalf("expected snapshot nickname %q, got %q", cfg.AsteriskName, snapshot.AsteriskName)
-	}
-
-	roundTripped := snapshot.ToConfig()
-	if roundTripped.AsteriskName != cfg.AsteriskName {
-		t.Fatalf("expected round-tripped nickname %q, got %q", cfg.AsteriskName, roundTripped.AsteriskName)
-	}
-}
-
 func TestSaveCredentialSettingsPreservesUnmodifiedSecrets(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	cfg := config.Default()
-	cfg.HI3UID = "123456789"
-	cfg.BILIHITOKEN = "token-abc"
 	cfg.AsteriskName = "OriginalName"
 	if err := config.Save(path, cfg); err != nil {
 		t.Fatalf("seed config: %v", err)
@@ -229,21 +225,363 @@ func TestSaveCredentialSettingsPreservesUnmodifiedSecrets(t *testing.T) {
 		_ = svc.Close(context.Background())
 	}()
 
-	state, err := svc.SaveCredentialSettings("", false, "", false, "UpdatedName")
+	state, err := svc.SaveCredentialSettings("UpdatedName", "https://127.0.0.1:19777")
 	if err != nil {
 		t.Fatalf("save credential settings: %v", err)
 	}
 
-	if got := svc.Config().HI3UID; got != "123456789" {
-		t.Fatalf("expected HI3UID to remain unchanged, got %q", got)
-	}
-	if got := svc.Config().BILIHITOKEN; got != "token-abc" {
-		t.Fatalf("expected BILIHITOKEN to remain unchanged, got %q", got)
-	}
 	if got := svc.Config().AsteriskName; got != "UpdatedName" {
 		t.Fatalf("expected nickname to update, got %q", got)
+	}
+	if got := svc.Config().LoaderAPIBaseURL; got != "https://127.0.0.1:19777" {
+		t.Fatalf("expected loader api url to update, got %q", got)
 	}
 	if got := state.Config.AsteriskName; got != "UpdatedName" {
 		t.Fatalf("expected state nickname to update, got %q", got)
 	}
+	if got := state.Config.LoaderAPIBaseURL; got != "https://127.0.0.1:19777" {
+		t.Fatalf("expected state loader api url to update, got %q", got)
+	}
+}
+
+func TestAdoptBundledLoaderAPIUpdatesEmptyConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfg := config.Default()
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	svc, err := New(path)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer func() {
+		_ = svc.Close(context.Background())
+	}()
+
+	if err := svc.AdoptBundledLoaderAPI("https://127.0.0.1:50259"); err != nil {
+		t.Fatalf("adopt bundled endpoint: %v", err)
+	}
+	if got := svc.Config().LoaderAPIBaseURL; got != "https://127.0.0.1:50259" {
+		t.Fatalf("unexpected loader api base url: %q", got)
+	}
+}
+
+func TestAdoptBundledLoaderAPIPreservesRemoteConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfg := config.Default()
+	cfg.LoaderAPIBaseURL = "https://example.com"
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	svc, err := New(path)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer func() {
+		_ = svc.Close(context.Background())
+	}()
+
+	if err := svc.AdoptBundledLoaderAPI("https://127.0.0.1:50259"); err != nil {
+		t.Fatalf("adopt bundled endpoint: %v", err)
+	}
+	if got := svc.Config().LoaderAPIBaseURL; got != "https://example.com" {
+		t.Fatalf("expected remote loader api url to remain unchanged, got %q", got)
+	}
+}
+
+func TestBootstrapRequiresLoaderAPIAddress(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfg := config.Default()
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	svc, err := New(path)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer func() {
+		_ = svc.Close(context.Background())
+	}()
+
+	state, err := svc.Bootstrap(context.Background())
+	if err == nil {
+		t.Fatal("expected bootstrap without loader api address to fail")
+	}
+	if state.Running != true {
+		t.Fatalf("expected service to start monitor before prompting config")
+	}
+	if state.LastErrorMessage.Code != "backend.error.loader_api_required" {
+		t.Fatalf("unexpected error code: %+v", state.LastErrorMessage)
+	}
+}
+
+func TestPollAPIHealthOnceUpdatesReadyState(t *testing.T) {
+	server, authorityPublicKey := newSecureHealthzServer(t)
+	defer server.Close()
+	restoreAuthority := bridge.SetEmbeddedServerAuthorityForTesting(authorityPublicKey)
+	defer restoreAuthority()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfg := config.Default()
+	cfg.LoaderAPIBaseURL = server.URL
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	svc, err := New(path)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer func() {
+		_ = svc.Close(context.Background())
+	}()
+
+	svc.pollAPIHealthOnce(context.Background())
+	if !svc.State().APIReady {
+		t.Fatal("expected apiReady to become true after successful probe")
+	}
+
+	server.Close()
+	svc.pollAPIHealthOnce(context.Background())
+	if svc.State().APIReady {
+		t.Fatal("expected apiReady to become false after probe failure")
+	}
+}
+
+func TestPollAPIHealthOnceSkipsDuringAPIInteraction(t *testing.T) {
+	serverHit := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverHit = true
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfg := config.Default()
+	cfg.LoaderAPIBaseURL = server.URL
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	svc, err := New(path)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer func() {
+		_ = svc.Close(context.Background())
+	}()
+
+	svc.beginAPIInteraction()
+	defer svc.endAPIInteraction()
+
+	svc.pollAPIHealthOnce(context.Background())
+	if serverHit {
+		t.Fatal("expected poll to skip active api interaction")
+	}
+	if svc.State().APIReady {
+		t.Fatal("expected apiReady to remain false when poll is skipped")
+	}
+}
+
+func newSecureHealthzServer(t *testing.T) (*httptest.Server, ed25519.PublicKey) {
+	t.Helper()
+
+	curve := ecdh.X25519()
+	authorityPublicKey, authorityPrivateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate authority key: %v", err)
+	}
+	var (
+		mu       sync.Mutex
+		sessions = map[string][]byte{}
+		server   *httptest.Server
+	)
+
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/session/manifest":
+			req := &loaderapiv1.ManifestRequest{}
+			if err := decodeServiceProtoRequest(r, req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			fingerprint := sha256HexForTest(server.Certificate().Raw)
+			generatedAt := time.Now().Format(time.RFC3339)
+			signature := ed25519.Sign(authorityPrivateKey, manifestSignaturePayloadForTest("test", fingerprint, loaderapiv1.ProtocolValue, "module", generatedAt))
+			writeServiceProtoResponse(t, w, &loaderapiv1.ManifestResponse{
+				KeyId:           "test",
+				TlsCertSha256:   fingerprint,
+				ProtocolVersion: loaderapiv1.ProtocolValue,
+				ServerName:      "module",
+				GeneratedAt:     generatedAt,
+				Signature:       signature,
+			})
+		case "/v1/session/handshake":
+			req := &loaderapiv1.HandshakeRequest{}
+			if err := decodeServiceProtoRequest(r, req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			clientPublicKey, err := curve.NewPublicKey(req.ClientPublicKey)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			serverKey, err := curve.GenerateKey(rand.Reader)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			serverNonce := make([]byte, 32)
+			if _, err := io.ReadFull(rand.Reader, serverNonce); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			sharedSecret, err := serverKey.ECDH(clientPublicKey)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			sessionKey, err := hkdf.Key(sha256.New, sharedSecret, append(append([]byte(nil), req.ClientNonce...), serverNonce...), "hi3loader/loader-api/session/v1", 32)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			sessionID := "sess-" + sha256HexForTest(serverNonce)[:12]
+			mu.Lock()
+			sessions[sessionID] = sessionKey
+			mu.Unlock()
+			writeServiceProtoResponse(t, w, &loaderapiv1.HandshakeResponse{
+				SessionID:            sessionID,
+				ServerPublicKey:      serverKey.PublicKey().Bytes(),
+				ServerNonce:          serverNonce,
+				ProtocolVersion:      loaderapiv1.ProtocolValue,
+				ServerVersion:        "test",
+				Message:              "OK",
+				SessionExpiresUnixMs: time.Now().Add(30 * time.Second).UnixMilli(),
+			})
+		case "/v1/healthz":
+			wire := &loaderapiv1.SealedRequest{}
+			if err := decodeServiceProtoRequest(r, wire); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			sessionKey := append([]byte(nil), sessions[wire.SessionID]...)
+			mu.Unlock()
+			if len(sessionKey) == 0 {
+				http.Error(w, "missing session", http.StatusUnauthorized)
+				return
+			}
+			plaintext, err := openServicePayload(sessionKey, requestAADForTest("/v1/healthz", wire.SessionID), wire.Nonce, wire.Ciphertext)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusUnauthorized)
+				return
+			}
+			req := &loaderapiv1.HealthzRequest{}
+			if err := proto.Unmarshal(plaintext, protoadapt.MessageV2Of(req)); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			payload, err := proto.Marshal(protoadapt.MessageV2Of(&loaderapiv1.HealthzResponse{
+				Ok:              true,
+				ServerName:      "module",
+				ServerVersion:   "test",
+				ProtocolVersion: loaderapiv1.ProtocolValue,
+				Message:         "ok",
+			}))
+			if err != nil {
+				t.Fatalf("marshal healthz response: %v", err)
+			}
+			nonce := make([]byte, 12)
+			if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+				t.Fatalf("nonce: %v", err)
+			}
+			ciphertext, err := sealServicePayload(sessionKey, responseAADForTest("/v1/healthz", wire.SessionID), nonce, payload)
+			if err != nil {
+				t.Fatalf("seal response: %v", err)
+			}
+			writeServiceProtoResponse(t, w, &loaderapiv1.SealedResponse{
+				Nonce:      nonce,
+				Ciphertext: ciphertext,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	return server, authorityPublicKey
+}
+
+func decodeServiceProtoRequest(r *http.Request, out protoadapt.MessageV1) error {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return err
+	}
+	return proto.Unmarshal(body, protoadapt.MessageV2Of(out))
+}
+
+func writeServiceProtoResponse(t *testing.T, w http.ResponseWriter, msg protoadapt.MessageV1) {
+	t.Helper()
+	raw, err := proto.Marshal(protoadapt.MessageV2Of(msg))
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	w.Header().Set("Content-Type", loaderapiv1.ContentType)
+	_, _ = w.Write(raw)
+}
+
+func requestAADForTest(path, sessionID string) []byte {
+	return []byte("request|" + sessionID + "|" + path)
+}
+
+func responseAADForTest(path, sessionID string) []byte {
+	return []byte("response|" + sessionID + "|" + path)
+}
+
+func sealServicePayload(key, aad, nonce, plaintext []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	return aead.Seal(nil, nonce, plaintext, aad), nil
+}
+
+func openServicePayload(key, aad, nonce, ciphertext []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	return aead.Open(nil, nonce, ciphertext, aad)
+}
+
+func sha256HexForTest(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func manifestSignaturePayloadForTest(keyID, tlsCertSHA256, protocolVersion, serverName, generatedAt string) []byte {
+	parts := []string{
+		strings.TrimSpace(keyID),
+		strings.ToLower(strings.TrimSpace(tlsCertSHA256)),
+		strings.TrimSpace(protocolVersion),
+		strings.TrimSpace(serverName),
+		strings.TrimSpace(generatedAt),
+	}
+	return []byte(strings.Join(parts, "\n"))
 }

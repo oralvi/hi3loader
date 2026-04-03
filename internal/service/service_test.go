@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -244,6 +245,75 @@ func TestSaveCredentialSettingsPreservesUnmodifiedSecrets(t *testing.T) {
 	}
 }
 
+func TestSaveLauncherPathUpdatesConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	launcherPath := filepath.Join(dir, "launcher.exe")
+	if err := os.WriteFile(launcherPath, []byte("stub"), 0o600); err != nil {
+		t.Fatalf("write launcher.exe: %v", err)
+	}
+	cfg := config.Default()
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	svc, err := New(path)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer func() {
+		_ = svc.Close(context.Background())
+	}()
+
+	state, err := svc.SaveLauncherPath(launcherPath)
+	if err != nil {
+		t.Fatalf("save launcher path: %v", err)
+	}
+	if got := svc.Config().LauncherPath; got == "" {
+		t.Fatal("expected launcher path to be saved")
+	}
+	if got := state.Config.LauncherPath; got == "" {
+		t.Fatal("expected state launcher path to be saved")
+	}
+}
+
+func TestClearCurrentAccountRemovesOnlyActiveEntry(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfg := config.Default()
+	cfg.Accounts = []config.SavedAccount{
+		{Account: "account-a", Password: "secret-a", AccessKey: "access-a", UName: "Alice", LastLoginSucc: true},
+		{Account: "account-b", Password: "secret-b", AccessKey: "access-b", UName: "Bob", LastLoginSucc: true},
+	}
+	cfg.CurrentAccount = "account-b"
+	cfg.AccountLogin = true
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	svc, err := New(path)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer func() {
+		_ = svc.Close(context.Background())
+	}()
+
+	state, err := svc.ClearCurrentAccount()
+	if err != nil {
+		t.Fatalf("clear current account: %v", err)
+	}
+	if len(state.Config.SavedAccounts) != 1 {
+		t.Fatalf("expected one saved account to remain, got %d", len(state.Config.SavedAccounts))
+	}
+	if state.Config.Account != "account-a" {
+		t.Fatalf("expected remaining account to become active, got %q", state.Config.Account)
+	}
+	if svc.Config().AccountLogin {
+		t.Fatal("expected account login state to be cleared")
+	}
+}
+
 func TestAdoptBundledLoaderAPIUpdatesEmptyConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
@@ -318,6 +388,64 @@ func TestBootstrapRequiresLoaderAPIAddress(t *testing.T) {
 	}
 	if state.LastErrorMessage.Code != "backend.error.loader_api_required" {
 		t.Fatalf("unexpected error code: %+v", state.LastErrorMessage)
+	}
+}
+
+func TestBootstrapReturnsWhileBundledRuntimeWarmsUp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfg := config.Default()
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	loaderCorePath := filepath.Join(dir, "loader-core.exe")
+	sourcePath := filepath.Join(dir, "loader-core.go")
+	source := `package main
+import "time"
+func main() { time.Sleep(2 * time.Second) }
+`
+	if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
+		t.Fatalf("write loader-core stub: %v", err)
+	}
+	build := exec.Command("go", "build", "-o", loaderCorePath, sourcePath)
+	build.Dir = dir
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build loader-core stub: %v (%s)", err, strings.TrimSpace(string(output)))
+	}
+
+	authorityPublicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate authority key: %v", err)
+	}
+	restoreAuthority := bridge.SetEmbeddedServerAuthorityForTesting(authorityPublicKey)
+	defer restoreAuthority()
+
+	svc, err := New(path)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	svc.module = &moduleRuntime{
+		baseDir: dir,
+		exePath: loaderCorePath,
+	}
+	defer func() {
+		_ = svc.Close(context.Background())
+	}()
+
+	startedAt := time.Now()
+	state, err := svc.Bootstrap(context.Background())
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed >= 2*time.Second {
+		t.Fatalf("expected bootstrap to return before bundled runtime is ready, took %s", elapsed)
+	}
+	if !state.RuntimePreparing {
+		t.Fatalf("expected runtimePreparing during bundled startup")
+	}
+	if state.APIReady {
+		t.Fatalf("expected apiReady to remain false while bundled runtime is still starting")
 	}
 }
 

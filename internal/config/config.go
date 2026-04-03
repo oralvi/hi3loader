@@ -34,6 +34,7 @@ type Config struct {
 	SleepTime         int            `json:"sleep_time"`
 	AutoClose         bool           `json:"auto_close"`
 	GamePath          string         `json:"game_path,omitempty"`
+	LauncherPath      string         `json:"launcher_path,omitempty"`
 	AsteriskName      string         `json:"asterisk_name,omitempty"`
 	Accounts          []SavedAccount `json:"accounts,omitempty"`
 	AutoWindowCapture bool           `json:"auto_window_capture"`
@@ -137,6 +138,7 @@ func (c *Config) Normalize() bool {
 
 	changed = normalizeStringField(&c.CurrentAccount) || changed
 	changed = normalizeStringField(&c.GamePath) || changed
+	changed = normalizeStringField(&c.LauncherPath) || changed
 	changed = normalizeStringField(&c.LoaderAPIBaseURL) || changed
 	changed = normalizeStringField(&c.BackgroundImage) || changed
 	changed = normalizeStringField(&c.AsteriskName) || changed
@@ -375,6 +377,40 @@ func (c *Config) ClearSavedAccountSession(account string) bool {
 		return changed
 	}
 	return false
+}
+
+func (c *Config) RemoveSavedAccount(account string) bool {
+	if c == nil {
+		return false
+	}
+	identity := savedAccountIdentity(account)
+	if identity == "" {
+		return false
+	}
+
+	index := -1
+	for i := range c.Accounts {
+		if savedAccountIdentity(c.Accounts[i].Account) == identity {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return false
+	}
+
+	c.Accounts = append(c.Accounts[:index], c.Accounts[index+1:]...)
+	if len(c.Accounts) == 0 {
+		c.CurrentAccount = ""
+		c.AccountLogin = false
+		return true
+	}
+
+	if savedAccountIdentity(c.CurrentAccount) == identity {
+		c.CurrentAccount = c.Accounts[0].Account
+		c.AccountLogin = false
+	}
+	return true
 }
 
 func StringValue(v any) string {

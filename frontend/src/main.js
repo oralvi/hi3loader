@@ -6,6 +6,8 @@ import {
   BrowseBackgroundImage,
   Bootstrap,
   BrowseGamePath,
+  BrowseLauncherPath,
+  ClearCurrentAccount,
   LaunchGame,
   LogSnapshot,
   Login,
@@ -16,6 +18,7 @@ import {
   ResumeMonitor,
   SaveCredentialSettings,
   SaveFeatureSettings,
+  SaveLauncherPath,
   ScanWindow,
   SelectSavedAccount,
   UpdateBackground,
@@ -149,6 +152,11 @@ document.querySelector("#app").innerHTML = `
               <button class="button button-solid account-icon-button account-add-button" id="addAccountBtn" type="button" aria-label="${t("settings.addAccount")}" title="${t("settings.addAccount")}">
                 <span aria-hidden="true">+</span>
               </button>
+              <button class="button button-ghost account-icon-button account-clear-button" id="clearAccountBtn" type="button" aria-label="${t("common.clear")}" title="${t("common.clear")}">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm1 6h2v8h-2V9Zm4 0h2v8h-2V9ZM7 9h2v8H7V9Zm-1 11h12a1 1 0 0 0 1-1V8H5v11a1 1 0 0 0 1 1Z"/>
+                </svg>
+              </button>
             </div>
             <button class="account-status-button" id="accountStatusBtn" type="button">${t("auth.status.none")}</button>
           </label>
@@ -172,15 +180,31 @@ document.querySelector("#app").innerHTML = `
           </label>
         </div>
 
-        <section class="settings-section">
+        <section class="settings-section settings-section-paths">
           <div class="section-labels">
-            <span class="section-title">${t("settings.gameDirectory")}</span>
-            <small class="section-hint">${t("settings.gameDirectoryHint")}</small>
+            <span class="section-title">${t("settings.runtimePaths")}</span>
+            <small class="section-hint">${t("settings.runtimePathsHint")}</small>
           </div>
-          <div class="path-row">
-            <input id="gamePathInput" readonly placeholder="${t("settings.gameDirectoryPlaceholder")}" />
-            <button class="button button-solid path-button" id="browseGamePathBtn" type="button">${t("common.browse")}</button>
-          </div>
+          <label class="field path-field">
+            <span>${t("settings.gameDirectory")}</span>
+            <div class="path-row">
+              <input id="gamePathInput" readonly placeholder="${t("settings.gameDirectoryPlaceholder")}" />
+              <div class="inline-actions">
+                <button class="button button-solid path-button" id="browseGamePathBtn" type="button">${t("common.browse")}</button>
+                <button class="button button-ghost path-button" id="clearGamePathBtn" type="button">${t("common.clear")}</button>
+              </div>
+            </div>
+          </label>
+          <label class="field path-field">
+            <span>${t("settings.launcherPath")}</span>
+            <div class="path-row">
+              <input id="launcherPathInput" autocomplete="off" placeholder="${t("settings.launcherPathPlaceholder")}" />
+              <div class="inline-actions">
+                <button class="button button-solid path-button" id="browseLauncherPathBtn" type="button">${t("common.browse")}</button>
+                <button class="button button-ghost path-button" id="clearLauncherPathBtn" type="button">${t("common.clear")}</button>
+              </div>
+            </div>
+          </label>
         </section>
 
         <div class="settings-split">
@@ -302,6 +326,7 @@ const elements = {
   accountMenu: document.getElementById("accountMenu"),
   editAccountBtn: document.getElementById("editAccountBtn"),
   addAccountBtn: document.getElementById("addAccountBtn"),
+  clearAccountBtn: document.getElementById("clearAccountBtn"),
   accountStatusBtn: document.getElementById("accountStatusBtn"),
   asteriskNameInput: document.getElementById("asteriskNameInput"),
   loaderApiInput: document.getElementById("loaderApiInput"),
@@ -310,6 +335,7 @@ const elements = {
   localeValue: document.getElementById("localeValue"),
   localeMenu: document.getElementById("localeMenu"),
   gamePathInput: document.getElementById("gamePathInput"),
+  launcherPathInput: document.getElementById("launcherPathInput"),
   backgroundOpacityInput: document.getElementById("backgroundOpacityInput"),
   backgroundOpacityValue: document.getElementById("backgroundOpacityValue"),
   backgroundStatusValue: document.getElementById("backgroundStatusValue"),
@@ -325,6 +351,9 @@ const elements = {
   settingsSheet: document.getElementById("settingsSheet"),
   settingsCloseBtn: document.getElementById("settingsCloseBtn"),
   browseGamePathBtn: document.getElementById("browseGamePathBtn"),
+  clearGamePathBtn: document.getElementById("clearGamePathBtn"),
+  browseLauncherPathBtn: document.getElementById("browseLauncherPathBtn"),
+  clearLauncherPathBtn: document.getElementById("clearLauncherPathBtn"),
   browseBackgroundBtn: document.getElementById("browseBackgroundBtn"),
   resetBackgroundBtn: document.getElementById("resetBackgroundBtn"),
   saveBtn: document.getElementById("saveBtn"),
@@ -979,6 +1008,7 @@ function setStatus(dot, valueNode, tone, text) {
 
 const actionTextMap = {
   monitoring: "actionState.monitoring",
+  runtime_starting: "topbar.starting",
   stopped: "actionState.stopped",
   scan_complete: "actionState.scan_complete",
   launch_game: "actionState.launch_game",
@@ -1015,6 +1045,9 @@ function formatErrorValue(value, messageRef = null) {
 }
 
 function formatAPIStatus(state, cfg) {
+  if (state.runtimePreparing) {
+    return { tone: "warn", text: t("topbar.apiPending") };
+  }
   const apiAddress = String(cfg.loader_api_base_url ?? cfg.loaderApiBaseURL ?? "").trim();
   if (!apiAddress) {
     return { tone: "error", text: t("topbar.notSet") };
@@ -1025,6 +1058,9 @@ function formatAPIStatus(state, cfg) {
 }
 
 function formatWindowStatus(state) {
+  if (state.runtimePreparing) {
+    return { tone: "warn", text: t("topbar.starting") };
+  }
   return state.running
     ? { tone: "ok", text: t("status.monitoring") }
     : { tone: "error", text: t("status.idle") };
@@ -1092,6 +1128,7 @@ function renderState(state) {
   const autoWindowCapture = Boolean(cfg.auto_window_capture ?? cfg.autoWindowCapture);
   const autoClose = Boolean(cfg.auto_close ?? cfg.autoClose);
   const gamePath = cfg.game_path ?? cfg.gamePath ?? "";
+  const launcherPath = cfg.launcher_path ?? cfg.launcherPath ?? "";
   const hasBackgroundImage = Boolean(cfg.has_background_image ?? cfg.hasBackgroundImage);
   const backgroundOpacity = Math.round(
     Math.max(20, Math.min(100, Number(cfg.background_opacity ?? cfg.backgroundOpacity ?? 0.35) * 100)),
@@ -1134,6 +1171,7 @@ function renderState(state) {
   syncInputValue(elements.asteriskNameInput, cfg.asterisk_name ?? cfg.asteriskName ?? "");
   syncInputValue(elements.loaderApiInput, normalizeLoaderAPIAddress(cfg.loader_api_base_url ?? cfg.loaderApiBaseURL ?? ""));
   syncInputValue(elements.gamePathInput, gamePath);
+  syncInputValue(elements.launcherPathInput, launcherPath);
   syncRangeValue(elements.backgroundOpacityInput, opacityPercentToSlider(backgroundOpacity));
   previewOpacity(opacityPercentToSlider(backgroundOpacity));
   elements.backgroundStatusValue.textContent = hasBackgroundImage ? t("settings.backgroundSet") : t("settings.backgroundUnset");
@@ -1153,6 +1191,9 @@ function renderState(state) {
     elements.autoCloseInput.checked = autoClose;
   }
   elements.launchGameBtn.disabled = !state.gamePathValid;
+  elements.clearGamePathBtn.disabled = !gamePath;
+  elements.clearLauncherPathBtn.disabled = !launcherPath;
+  elements.clearAccountBtn.disabled = !(cfg.saved_accounts ?? cfg.savedAccounts ?? []).length;
   refreshDraftActionState(cfg);
   populateAccountOptions(cfg);
   applyAccountStatus(state, cfg);
@@ -1191,6 +1232,8 @@ async function persistSettings({ showToast = true, closeSheet = false } = {}) {
   const currentAutoWindowCapture = Boolean(currentCfg.auto_window_capture ?? currentCfg.autoWindowCapture);
   const currentPanelBlur = Boolean(currentCfg.panel_blur ?? currentCfg.panelBlur ?? true);
   const currentGamePath = String(currentCfg.game_path ?? currentCfg.gamePath ?? "");
+  const currentLauncherPath = String(currentCfg.launcher_path ?? currentCfg.launcherPath ?? "");
+  const nextLauncherPath = String(elements.launcherPathInput.value ?? "").trim();
   const nextOpacity = sliderToOpacityPercent(elements.backgroundOpacityInput.value) / 100;
   const currentOpacity = Number(currentCfg.background_opacity ?? currentCfg.backgroundOpacity ?? 0.35);
   const needsFeatureSave =
@@ -1199,8 +1242,9 @@ async function persistSettings({ showToast = true, closeSheet = false } = {}) {
     nextAutoWindowCapture !== currentAutoWindowCapture ||
     nextPanelBlur !== currentPanelBlur ||
     Math.abs(nextOpacity - currentOpacity) > 0.0001;
+  const needsLauncherSave = nextLauncherPath !== currentLauncherPath;
 
-  if (!needsCredentialSave && !needsFeatureSave) {
+  if (!needsCredentialSave && !needsFeatureSave && !needsLauncherSave) {
     if (closeSheet) {
       closeSettings();
     }
@@ -1224,6 +1268,17 @@ async function persistSettings({ showToast = true, closeSheet = false } = {}) {
     state = await runTask(
       () => SaveFeatureSettings(nextGamePath, nextAutoClose, nextAutoWindowCapture, nextPanelBlur, nextOpacity),
       showToast ? () => ({ saved: true, gamePath: nextGamePath || null }) : null,
+    );
+    if (!state) {
+      return false;
+    }
+  }
+
+  if (needsLauncherSave) {
+    state = await runTask(
+      () => SaveLauncherPath(nextLauncherPath),
+      showToast ? () => ({ launcherPath: nextLauncherPath || null }) : null,
+      "soft",
     );
     if (!state) {
       return false;
@@ -1330,6 +1385,57 @@ elements.browseGamePathBtn.addEventListener("click", async () => {
   }
 });
 
+elements.clearGamePathBtn.addEventListener("click", async () => {
+  elements.gamePathInput.value = "";
+  const state = await runTask(
+    () =>
+      SaveFeatureSettings(
+        "",
+        elements.autoCloseInput.checked,
+        elements.autoWindowCaptureInput.checked,
+        elements.panelBlurInput.checked,
+        sliderToOpacityPercent(elements.backgroundOpacityInput.value) / 100,
+      ),
+    () => ({ gamePath: null }),
+    "soft",
+  );
+  if (state) {
+    renderState(state);
+  }
+});
+
+elements.browseLauncherPathBtn.addEventListener("click", async () => {
+  const selected = await runTask(
+    () => BrowseLauncherPath(),
+    (value) => ({ selected: value || null }),
+    "soft",
+  );
+  if (selected === null || !selected) {
+    return;
+  }
+  elements.launcherPathInput.value = selected;
+  const state = await runTask(
+    () => SaveLauncherPath(selected),
+    () => ({ launcherPath: selected }),
+    "soft",
+  );
+  if (state) {
+    renderState(state);
+  }
+});
+
+elements.clearLauncherPathBtn.addEventListener("click", async () => {
+  elements.launcherPathInput.value = "";
+  const state = await runTask(
+    () => SaveLauncherPath(""),
+    () => ({ launcherPath: null }),
+    "soft",
+  );
+  if (state) {
+    renderState(state);
+  }
+});
+
 elements.browseBackgroundBtn.addEventListener("click", async () => {
   const selected = await runTask(
     () => BrowseBackgroundImage(),
@@ -1407,6 +1513,12 @@ elements.addAccountBtn.addEventListener("click", () => {
 });
 elements.editAccountBtn.addEventListener("click", () => {
   openAuthSheet("existing");
+});
+elements.clearAccountBtn.addEventListener("click", async () => {
+  const state = await runTask(() => ClearCurrentAccount(), () => ({ account: null }), "soft");
+  if (state) {
+    renderState(state);
+  }
 });
 elements.authCloseBtn.addEventListener("click", () => {
   closeAuthSheet();

@@ -24,11 +24,11 @@ const (
 )
 
 type moduleRuntime struct {
-	mu        sync.Mutex
-	baseDir   string
-	exePath   string
-	endpoint  string
-	cmd       *exec.Cmd
+	mu       sync.Mutex
+	baseDir  string
+	exePath  string
+	endpoint string
+	cmd      *exec.Cmd
 }
 
 func newModuleRuntime() *moduleRuntime {
@@ -37,8 +37,8 @@ func newModuleRuntime() *moduleRuntime {
 		baseDir = filepath.Dir(exePath)
 	}
 	return &moduleRuntime{
-		baseDir:  baseDir,
-		exePath:  filepath.Join(baseDir, moduleExecutableName),
+		baseDir: baseDir,
+		exePath: filepath.Join(baseDir, moduleExecutableName),
 	}
 }
 
@@ -134,7 +134,8 @@ func (m *moduleRuntime) start(endpoint string) error {
 }
 
 func (m *moduleRuntime) stopExistingProcess() error {
-	script := `$target = [System.IO.Path]::GetFullPath($args[0]);
+	target := strings.ReplaceAll(m.exePath, "'", "''")
+	script := `$target = [System.IO.Path]::GetFullPath('` + target + `');
 $name = [System.IO.Path]::GetFileName($target);
 Get-CimInstance Win32_Process -Filter ("Name='" + $name.Replace("'", "''") + "'") |
   Where-Object {
@@ -156,7 +157,6 @@ Get-CimInstance Win32_Process -Filter ("Name='" + $name.Replace("'", "''") + "'"
 		"Bypass",
 		"-Command",
 		script,
-		m.exePath,
 	)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("stop existing %s: %w (%s)", moduleExecutableName, err, strings.TrimSpace(string(output)))
@@ -229,24 +229,56 @@ func (m *moduleRuntime) allocateEndpoint() (string, error) {
 	return fmt.Sprintf("https://%s:%d", moduleLoopbackHost, port), nil
 }
 
-func (s *Service) ensureBundledModule(ctx context.Context) error {
+func (s *Service) ensureBundledModule(ctx context.Context) (bool, error) {
 	if s.module == nil || !s.ShouldUseBundledLoaderAPI() {
-		return nil
+		return false, nil
 	}
 	if !s.module.exists() {
 		s.Note("bundled module executable not found; continuing without local companion")
-		return nil
+		return false, nil
 	}
 	if !bridge.HasEmbeddedServerAuthority() {
 		s.Note("bundled module found without embedded authority; continuing without local companion")
-		return nil
+		return false, nil
 	}
+
+	if endpoint, ok := s.module.currentEndpoint(); ok && s.module.endpointReachable(ctx, endpoint) {
+		if err := s.AdoptBundledLoaderAPI(endpoint); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if s.isRuntimePreparing() {
+		return true, nil
+	}
+
+	s.setRuntimePreparing(true)
+	s.logf("starting bundled runtime in background")
+	go s.bootstrapBundledModule(context.Background())
+	return true, nil
+}
+
+func (s *Service) bootstrapBundledModule(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, moduleStartTimeout)
+	defer cancel()
 
 	endpoint, err := s.module.ensureRunning(ctx)
 	if err != nil {
-		return err
+		s.setRuntimePreparing(false)
+		s.setError(fmt.Errorf("start bundled runtime: %w", err))
+		return
 	}
-	return s.AdoptBundledLoaderAPI(endpoint)
+
+	if err := s.AdoptBundledLoaderAPI(endpoint); err != nil {
+		s.setRuntimePreparing(false)
+		s.setError(err)
+		return
+	}
+
+	if err := s.refreshAPIHealth(context.Background()); err != nil {
+		s.logf("loader api probe failed: %v", err)
+	}
+	s.setRuntimePreparing(false)
 }
 
 func isLoopbackLoaderAPI(raw string) bool {

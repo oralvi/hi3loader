@@ -3,6 +3,8 @@ package main
 import (
 	"embed"
 	"log"
+	"os"
+	"path/filepath"
 
 	"hi3loader/internal/buildinfo"
 	"hi3loader/internal/service"
@@ -24,7 +26,7 @@ func appTitle() string {
 }
 
 func main() {
-	svc, err := service.New("config.json")
+	svc, err := service.New(configPath())
 	if err != nil {
 		log.Fatalf("init service: %v", err)
 	}
@@ -55,4 +57,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func configPath() string {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "config.json"
+	}
+	return filepath.Join(filepath.Dir(exePath), "config.json")
 }

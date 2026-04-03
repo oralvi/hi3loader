@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"hi3loader/internal/service"
 
@@ -12,8 +13,10 @@ import (
 )
 
 type App struct {
-	ctx context.Context
-	svc *service.Service
+	ctx                        context.Context
+	svc                        *service.Service
+	updatePromptMu             sync.Mutex
+	startupUpdatePromptPending bool
 }
 
 func NewApp(svc *service.Service) *App {
@@ -31,6 +34,7 @@ func (a *App) startup(ctx context.Context) {
 			if state.QuitRequested {
 				runtime.EventsEmit(ctx, "quit-requested", state)
 			}
+			a.maybePromptGameUpdateWhenReady(state)
 		},
 	})
 }
@@ -40,7 +44,37 @@ func (a *App) shutdown(ctx context.Context) {
 }
 
 func (a *App) Bootstrap() (service.State, error) {
-	return a.svc.Bootstrap(context.Background())
+	state, err := a.svc.Bootstrap(context.Background())
+	if err == nil {
+		a.setStartupUpdatePromptPending(strings.TrimSpace(state.Config.GamePath) != "")
+		a.maybePromptGameUpdateWhenReady(state)
+	}
+	return state, err
+}
+
+func (a *App) setStartupUpdatePromptPending(pending bool) {
+	a.updatePromptMu.Lock()
+	a.startupUpdatePromptPending = pending
+	a.updatePromptMu.Unlock()
+}
+
+func (a *App) maybePromptGameUpdateWhenReady(state service.State) {
+	if a == nil || a.svc == nil {
+		return
+	}
+	if strings.TrimSpace(state.Config.GamePath) == "" || state.RuntimePreparing || !state.APIReady {
+		return
+	}
+
+	a.updatePromptMu.Lock()
+	if !a.startupUpdatePromptPending {
+		a.updatePromptMu.Unlock()
+		return
+	}
+	a.startupUpdatePromptPending = false
+	a.updatePromptMu.Unlock()
+
+	a.maybePromptGameUpdateOnStartup()
 }
 
 func (a *App) LogSnapshot() []service.LogEntry {
@@ -48,7 +82,16 @@ func (a *App) LogSnapshot() []service.LogEntry {
 }
 
 func (a *App) SaveFeatureSettings(gamePath string, autoClose, autoClip, panelBlur bool, opacity float64) (service.State, error) {
-	return a.svc.SaveFeatureSettings(strings.TrimSpace(gamePath), autoClose, autoClip, panelBlur, opacity)
+	previousGamePath := ""
+	if cfg := a.svc.Config(); cfg != nil {
+		previousGamePath = cfg.GamePath
+	}
+
+	state, err := a.svc.SaveFeatureSettings(strings.TrimSpace(gamePath), autoClose, autoClip, panelBlur, opacity)
+	if err == nil && shouldPromptGameUpdateAfterSave(previousGamePath, state.Config.GamePath) {
+		a.maybePromptGameUpdateAfterSave()
+	}
+	return state, err
 }
 
 func (a *App) UpdateBackground(backgroundPath string, opacity float64) (service.State, error) {
@@ -61,6 +104,10 @@ func (a *App) Login(account, password string) (service.LoginResult, error) {
 
 func (a *App) SelectSavedAccount(account string) (service.State, error) {
 	return a.svc.SelectSavedAccount(strings.TrimSpace(account))
+}
+
+func (a *App) ClearCurrentAccount() (service.State, error) {
+	return a.svc.ClearCurrentAccount()
 }
 
 func (a *App) PauseMonitor() {
@@ -88,6 +135,26 @@ func (a *App) BrowseGamePath() (string, error) {
 		DefaultDirectory:     defaultDir,
 		CanCreateDirectories: false,
 		ShowHiddenFiles:      false,
+	})
+}
+
+func (a *App) BrowseLauncherPath() (string, error) {
+	cfg := a.svc.Config()
+	defaultDir := ""
+	if launcherPath := strings.TrimSpace(cfg.LauncherPath); launcherPath != "" {
+		if _, err := os.Stat(launcherPath); err == nil {
+			defaultDir = filepath.Dir(launcherPath)
+		}
+	}
+	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:            "Select official launcher executable",
+		DefaultDirectory: defaultDir,
+		Filters: []runtime.FileFilter{
+			{
+				DisplayName: "Executable Files",
+				Pattern:     "*.exe",
+			},
+		},
 	})
 }
 
@@ -129,6 +196,10 @@ func (a *App) ScanWindow() (service.ScanWindowResult, error) {
 
 func (a *App) SaveCredentialSettings(asteriskName, loaderAPIBaseURL string) (service.State, error) {
 	return a.svc.SaveCredentialSettings(strings.TrimSpace(asteriskName), strings.TrimSpace(loaderAPIBaseURL))
+}
+
+func (a *App) SaveLauncherPath(launcherPath string) (service.State, error) {
+	return a.svc.SaveLauncherPath(strings.TrimSpace(launcherPath))
 }
 
 func (a *App) RecordClientMessage(message string) {

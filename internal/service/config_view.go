@@ -12,6 +12,7 @@ type ConfigView struct {
 	SavedAccounts      []SavedAccountView `json:"saved_accounts,omitempty"`
 	AutoClose          bool               `json:"auto_close"`
 	GamePath           string             `json:"game_path,omitempty"`
+	LauncherPath       string             `json:"launcher_path,omitempty"`
 	UID                int64              `json:"uid"`
 	LastLoginSucc      bool               `json:"last_login_succ"`
 	AccountLogin       bool               `json:"account_login"`
@@ -44,6 +45,7 @@ func buildConfigView(cfg *config.Config) ConfigView {
 		SavedAccounts:      buildSavedAccountViews(cfg.Accounts),
 		AutoClose:          cfg.AutoClose,
 		GamePath:           cfg.GamePath,
+		LauncherPath:       cfg.LauncherPath,
 		UID:                active.UID,
 		LastLoginSucc:      active.LastLoginSucc,
 		AccountLogin:       cfg.AccountLogin,

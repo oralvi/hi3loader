@@ -67,6 +67,7 @@ type LogEntry struct {
 type State struct {
 	Config           ConfigView `json:"config"`
 	Running          bool       `json:"running"`
+	RuntimePreparing bool       `json:"runtimePreparing"`
 	APIReady         bool       `json:"apiReady"`
 	ServerAddress    string     `json:"serverAddress"`
 	ServerReady      bool       `json:"serverReady"`
@@ -128,6 +129,7 @@ type Service struct {
 	serverReady         bool
 	serverStarted       bool
 	running             bool
+	runtimePreparing    bool
 	apiReady            bool
 	loopCancel          context.CancelFunc
 	monitorWake         chan struct{}
@@ -208,8 +210,10 @@ func (s *Service) Bootstrap(ctx context.Context) (State, error) {
 	if err := s.Start(); err != nil {
 		return State{}, err
 	}
-	if err := s.ensureBundledModule(ctx); err != nil {
+	if pending, err := s.ensureBundledModule(ctx); err != nil {
 		return s.State(), err
+	} else if pending {
+		return s.State(), nil
 	}
 
 	if err := s.requireLoaderAPIConfigured(); err != nil {
@@ -300,6 +304,7 @@ func (s *Service) State() State {
 	cfg := s.cfg.Clone()
 	running := s.running
 	apiReady := s.apiReady
+	runtimePreparing := s.runtimePreparing
 	serverReady := s.serverReady
 	logPath := s.logPath()
 	captchaURL := s.captchaURL
@@ -318,6 +323,7 @@ func (s *Service) State() State {
 	return State{
 		Config:           buildConfigView(cfg),
 		Running:          running,
+		RuntimePreparing: runtimePreparing,
 		APIReady:         apiReady,
 		ServerAddress:    s.server.Addr(),
 		ServerReady:      serverReady,
@@ -385,6 +391,37 @@ func (s *Service) SaveFeatureSettings(gamePath string, autoClose, autoWindowCapt
 	if autoWindowCapture || prevAutoWindowCapture {
 		s.wakeMonitorLoop()
 	}
+	return s.State(), nil
+}
+
+func (s *Service) SaveLauncherPath(launcherPath string) (State, error) {
+	resolvedLauncherPath := ""
+	if strings.TrimSpace(launcherPath) != "" {
+		exePath, err := gameclient.ResolveLauncherExecutable(launcherPath)
+		if err != nil {
+			return State{}, err
+		}
+		resolvedLauncherPath = exePath
+	}
+
+	s.mu.Lock()
+	if s.cfg == nil {
+		s.mu.Unlock()
+		return s.State(), fmt.Errorf("config is not loaded")
+	}
+
+	nextCfg := s.cfg.Clone()
+	nextCfg.LauncherPath = resolvedLauncherPath
+	err := config.Save(s.cfgPath, nextCfg)
+	if err == nil {
+		s.cfg = nextCfg
+	}
+	s.mu.Unlock()
+	if err != nil {
+		return State{}, err
+	}
+
+	s.emitState()
 	return s.State(), nil
 }
 
@@ -547,6 +584,37 @@ func (s *Service) SelectSavedAccount(account string) (State, error) {
 	s.restartMonitorContext()
 
 	s.logf("switched active account to %s", maskSecret(account))
+	s.emitState()
+	return s.State(), nil
+}
+
+func (s *Service) ClearCurrentAccount() (State, error) {
+	s.mu.Lock()
+	if s.cfg == nil {
+		s.mu.Unlock()
+		return s.State(), fmt.Errorf("config is not loaded")
+	}
+	current, ok := s.cfg.CurrentSavedAccount()
+	if !ok || strings.TrimSpace(current.Account) == "" {
+		s.mu.Unlock()
+		return s.State(), nil
+	}
+
+	nextCfg := s.cfg.Clone()
+	if !nextCfg.RemoveSavedAccount(current.Account) {
+		s.mu.Unlock()
+		return s.State(), nil
+	}
+	if err := config.Save(s.cfgPath, nextCfg); err != nil {
+		s.mu.Unlock()
+		return s.State(), err
+	}
+	s.cfg = nextCfg
+	s.mu.Unlock()
+
+	s.clearPendingCredentials()
+	s.restartMonitorContext()
+	s.logf("cleared current account %s", maskSecret(current.Account))
 	s.emitState()
 	return s.State(), nil
 }
@@ -1687,6 +1755,27 @@ func (s *Service) setAPIReady(ready bool) {
 	if changed {
 		s.emitState()
 	}
+}
+
+func (s *Service) setRuntimePreparing(preparing bool) {
+	s.mu.Lock()
+	changed := s.runtimePreparing != preparing
+	s.runtimePreparing = preparing
+	if preparing {
+		s.lastAction = "runtime_starting"
+	} else if s.lastAction == "runtime_starting" && s.running {
+		s.lastAction = "monitoring"
+	}
+	s.mu.Unlock()
+	if changed {
+		s.emitState()
+	}
+}
+
+func (s *Service) isRuntimePreparing() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.runtimePreparing
 }
 
 func (s *Service) beginAPIInteraction() {

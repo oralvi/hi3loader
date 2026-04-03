@@ -12,6 +12,7 @@ var allowedConfigKeys = map[string]struct{}{
 	"sleep_time":          {},
 	"auto_close":          {},
 	"game_path":           {},
+	"launcher_path":       {},
 	"asterisk_name":       {},
 	"accounts":            {},
 	"auto_window_capture": {},
@@ -31,6 +32,7 @@ type storedConfigJSON struct {
 	SleepTime         int                      `json:"sleep_time"`
 	AutoClose         bool                     `json:"auto_close"`
 	GamePath          string                   `json:"game_path,omitempty"`
+	LauncherPath      string                   `json:"launcher_path,omitempty"`
 	AsteriskName      string                   `json:"asterisk_name,omitempty"`
 	Accounts          []storedSavedAccountJSON `json:"accounts,omitempty"`
 	AutoWindowCapture bool                     `json:"auto_window_capture"`
@@ -77,6 +79,7 @@ func (s storedConfig) MarshalJSON() ([]byte, error) {
 		SleepTime:         s.SleepTime,
 		AutoClose:         s.AutoClose,
 		GamePath:          normalizeString(s.GamePath),
+		LauncherPath:      normalizeString(s.LauncherPath),
 		AsteriskName:      normalizeString(s.AsteriskName),
 		Accounts:          accounts,
 		AutoWindowCapture: s.AutoWindowCapture,
@@ -126,6 +129,7 @@ func decodeStoredConfig(raw []byte) (*Config, error) {
 		SleepTime:         stored.SleepTime,
 		AutoClose:         stored.AutoClose,
 		GamePath:          stored.GamePath,
+		LauncherPath:      stored.LauncherPath,
 		AsteriskName:      stored.AsteriskName,
 		Accounts:          accounts,
 		AutoWindowCapture: stored.AutoWindowCapture,

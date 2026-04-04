@@ -14,6 +14,13 @@ type GameUpdateStatus struct {
 	Outdated      bool
 }
 
+type GameUpdatePrompt struct {
+	LocalVersion      string `json:"localVersion"`
+	RemoteVersion     string `json:"remoteVersion"`
+	Outdated          bool   `json:"outdated"`
+	LauncherAvailable bool   `json:"launcherAvailable"`
+}
+
 var (
 	readInstalledGameVersion   = gameclient.ReadVersion
 	fetchRuntimeProfileForGame = bridge.FetchRuntimeProfile
@@ -59,4 +66,37 @@ func (s *Service) DetectGameUpdate(ctx context.Context) (GameUpdateStatus, error
 		RemoteVersion: remoteVersion,
 		Outdated:      outdated,
 	}, nil
+}
+
+func (s *Service) CheckGameUpdate(ctx context.Context) (GameUpdatePrompt, error) {
+	status, err := s.DetectGameUpdate(ctx)
+	if err != nil {
+		return GameUpdatePrompt{}, err
+	}
+
+	cfg := s.Config()
+	return GameUpdatePrompt{
+		LocalVersion:      status.LocalVersion,
+		RemoteVersion:     status.RemoteVersion,
+		Outdated:          status.Outdated,
+		LauncherAvailable: strings.TrimSpace(cfg.LauncherPath) != "",
+	}, nil
+}
+
+func (s *Service) LaunchUpdater() error {
+	cfg := s.Config()
+	launchedPath, err := gameclient.LaunchLauncher(cfg.LauncherPath)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	s.lastAction = "launch_updater"
+	s.lastError = ""
+	s.lastErrorMessage = MessageRef{}
+	s.mu.Unlock()
+
+	s.logf("official launcher started via %s", launchedPath)
+	s.emitState()
+	return nil
 }

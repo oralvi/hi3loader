@@ -21,6 +21,7 @@ tmp/
 tmp_*/
 /.codex-tmp/
 /config.json.corrupt*
+*_test.go
 
 # Local workspace extras
 /scripts/manual_fetch_bili.go

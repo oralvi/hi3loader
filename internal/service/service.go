@@ -65,24 +65,27 @@ type LogEntry struct {
 }
 
 type State struct {
-	Config           ConfigView `json:"config"`
-	Running          bool       `json:"running"`
-	RuntimePreparing bool       `json:"runtimePreparing"`
-	APIReady         bool       `json:"apiReady"`
-	ServerAddress    string     `json:"serverAddress"`
-	ServerReady      bool       `json:"serverReady"`
-	GamePathValid    bool       `json:"gamePathValid"`
-	GamePathPrompt   string     `json:"gamePathPrompt"`
-	GamePathMessage  MessageRef `json:"gamePathMessage"`
-	LogPath          string     `json:"logPath"`
-	CaptchaURL       string     `json:"captchaURL"`
-	CaptchaPending   bool       `json:"captchaPending"`
-	LastAction       string     `json:"lastAction"`
-	LastError        string     `json:"lastError"`
-	LastErrorMessage MessageRef `json:"lastErrorMessage"`
-	LastTicket       string     `json:"lastTicket"`
-	LastQRCodeURL    string     `json:"lastQRCodeURL"`
-	QuitRequested    bool       `json:"quitRequested"`
+	Config           ConfigView    `json:"config"`
+	BuildInfo        BuildInfoView `json:"buildInfo"`
+	Running          bool          `json:"running"`
+	RuntimePreparing bool          `json:"runtimePreparing"`
+	APIReady         bool          `json:"apiReady"`
+	ServerAddress    string        `json:"serverAddress"`
+	ServerReady      bool          `json:"serverReady"`
+	GamePathValid    bool          `json:"gamePathValid"`
+	GamePathPrompt   string        `json:"gamePathPrompt"`
+	GamePathMessage  MessageRef    `json:"gamePathMessage"`
+	GamePathNote     string        `json:"gamePathNote"`
+	LauncherPathNote string        `json:"launcherPathNote"`
+	LogPath          string        `json:"logPath"`
+	CaptchaURL       string        `json:"captchaURL"`
+	CaptchaPending   bool          `json:"captchaPending"`
+	LastAction       string        `json:"lastAction"`
+	LastError        string        `json:"lastError"`
+	LastErrorMessage MessageRef    `json:"lastErrorMessage"`
+	LastTicket       string        `json:"lastTicket"`
+	LastQRCodeURL    string        `json:"lastQRCodeURL"`
+	QuitRequested    bool          `json:"quitRequested"`
 }
 
 type LoginResult struct {
@@ -152,6 +155,8 @@ type Service struct {
 	windowFingerprint   string
 	monitorPauseDepth   int
 	apiInteractionDepth int
+	gamePathNote        string
+	launcherPathNote    string
 	hooks               Hooks
 	fileLog             *debuglog.Logger
 	loginMu             sync.Mutex
@@ -194,6 +199,7 @@ func New(cfgPath string) (*Service, error) {
 		module:        newModuleRuntime(),
 	}
 	s.server = captcha.NewServer("127.0.0.1:0", s.handleCaptchaResult)
+	s.autoPopulateRuntimePaths()
 	if dataURL, err := loadBackgroundDataURL(cfg.BackgroundImage); err == nil {
 		s.backgroundDataURL = dataURL
 	}
@@ -309,6 +315,8 @@ func (s *Service) State() State {
 	logPath := s.logPath()
 	captchaURL := s.captchaURL
 	captchaPending := s.captchaPending
+	gamePathNote := s.gamePathNote
+	launcherPathNote := s.launcherPathNote
 	lastAction := s.lastAction
 	lastError := s.lastError
 	lastErrorMessage := cloneMessageRef(s.lastErrorMessage)
@@ -322,6 +330,7 @@ func (s *Service) State() State {
 
 	return State{
 		Config:           buildConfigView(cfg),
+		BuildInfo:        currentBuildInfo(),
 		Running:          running,
 		RuntimePreparing: runtimePreparing,
 		APIReady:         apiReady,
@@ -330,6 +339,8 @@ func (s *Service) State() State {
 		GamePathValid:    gamePathValid,
 		GamePathPrompt:   gamePathPrompt,
 		GamePathMessage:  gamePathMessage,
+		GamePathNote:     gamePathNote,
+		LauncherPathNote: launcherPathNote,
 		LogPath:          logPath,
 		CaptchaURL:       captchaURL,
 		CaptchaPending:   captchaPending,
@@ -382,6 +393,7 @@ func (s *Service) SaveFeatureSettings(gamePath string, autoClose, autoWindowCapt
 	err := config.Save(s.cfgPath, nextCfg)
 	if err == nil {
 		s.cfg = nextCfg
+		s.gamePathNote = ""
 	}
 	s.mu.Unlock()
 	if err != nil {
@@ -415,6 +427,7 @@ func (s *Service) SaveLauncherPath(launcherPath string) (State, error) {
 	err := config.Save(s.cfgPath, nextCfg)
 	if err == nil {
 		s.cfg = nextCfg
+		s.launcherPathNote = ""
 	}
 	s.mu.Unlock()
 	if err != nil {

@@ -5,9 +5,11 @@ import {
   BackgroundDataURL,
   BrowseBackgroundImage,
   Bootstrap,
+  CheckGameUpdate,
   BrowseGamePath,
   BrowseLauncherPath,
   ClearCurrentAccount,
+  LaunchUpdater,
   LaunchGame,
   LogSnapshot,
   Login,
@@ -32,6 +34,49 @@ const sensitiveKeys = new Set([
   "access_key",
 ]);
 const largeBlobKeys = new Set();
+const skipUpdatePromptStorageKey = "hi3loader.skip-update-prompt-once";
+
+function buildInfoText(key) {
+  const zh = {
+    title: "构建信息",
+    version: "版本号",
+    buildDate: "构建时间",
+    developer: "开发者",
+    license: "License",
+  };
+  const en = {
+    title: "Build Info",
+    version: "Version",
+    buildDate: "Build Date",
+    developer: "Developer",
+    license: "License",
+  };
+  const table = getLocale() === "en-US" ? en : zh;
+  return table[key] || key;
+}
+
+function updateAckText() {
+  return getLocale() === "en-US" ? "OK" : "好的";
+}
+
+function markSkipUpdatePromptOnce() {
+  try {
+    window.sessionStorage.setItem(skipUpdatePromptStorageKey, "1");
+  } catch (_) {
+  }
+}
+
+function consumeSkipUpdatePromptOnce() {
+  try {
+    if (window.sessionStorage.getItem(skipUpdatePromptStorageKey) !== "1") {
+      return false;
+    }
+    window.sessionStorage.removeItem(skipUpdatePromptStorageKey);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
 
 void async function main() {
 await initI18n();
@@ -131,10 +176,8 @@ document.querySelector("#app").innerHTML = `
           </div>
         </header>
 
-        <p class="settings-note" id="pathHintValue" hidden></p>
-
         <div class="settings-grid">
-          <label class="field settings-card settings-card-span">
+          <label class="field settings-card settings-card-span account-card">
             <span>${t("settings.accounts")}</span>
             <div class="account-picker-row">
               <div class="locale-picker account-picker" id="accountPicker">
@@ -165,72 +208,22 @@ document.querySelector("#app").innerHTML = `
             <input id="asteriskNameInput" autocomplete="off" placeholder="${t("settings.nicknamePlaceholder")}" />
           </label>
           <label class="field settings-card">
-            <span>${t("settings.locale")}</span>
+            <span>界面语言 / Language</span>
             <div class="locale-picker" id="localePicker">
-              <button class="locale-trigger" id="localeTrigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-label="${t("settings.locale")}">
+              <button class="locale-trigger" id="localeTrigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-label="界面语言 / Language">
                 <span class="locale-value" id="localeValue"></span>
                 <span class="locale-chevron" aria-hidden="true"></span>
               </button>
               <div class="locale-menu" id="localeMenu" role="listbox" hidden></div>
             </div>
           </label>
-          <label class="field settings-card settings-card-span">
+          <label class="field settings-card">
             <span>${t("settings.apiAddress")}</span>
             <input id="loaderApiInput" autocomplete="off" placeholder="${t("settings.apiAddressPlaceholder")}" />
           </label>
         </div>
 
-        <section class="settings-section settings-section-paths">
-          <div class="section-labels">
-            <span class="section-title">${t("settings.runtimePaths")}</span>
-            <small class="section-hint">${t("settings.runtimePathsHint")}</small>
-          </div>
-          <label class="field path-field">
-            <span>${t("settings.gameDirectory")}</span>
-            <div class="path-row">
-              <input id="gamePathInput" readonly placeholder="${t("settings.gameDirectoryPlaceholder")}" />
-              <div class="inline-actions">
-                <button class="button button-solid path-button" id="browseGamePathBtn" type="button">${t("common.browse")}</button>
-                <button class="button button-ghost path-button" id="clearGamePathBtn" type="button">${t("common.clear")}</button>
-              </div>
-            </div>
-          </label>
-          <label class="field path-field">
-            <span>${t("settings.launcherPath")}</span>
-            <div class="path-row">
-              <input id="launcherPathInput" autocomplete="off" placeholder="${t("settings.launcherPathPlaceholder")}" />
-              <div class="inline-actions">
-                <button class="button button-solid path-button" id="browseLauncherPathBtn" type="button">${t("common.browse")}</button>
-                <button class="button button-ghost path-button" id="clearLauncherPathBtn" type="button">${t("common.clear")}</button>
-              </div>
-            </div>
-          </label>
-        </section>
-
-        <div class="settings-split">
-          <section class="settings-section">
-            <div class="section-labels">
-              <span class="section-title">${t("settings.background")}</span>
-              <small class="section-hint section-status-pill" id="backgroundStatusValue" data-tone="warn">${t("settings.backgroundUnset")}</small>
-            </div>
-            <div class="background-actions">
-              <button class="button button-solid path-button" id="browseBackgroundBtn" type="button">${t("common.browse")}</button>
-              <button class="button button-ghost path-button" id="resetBackgroundBtn" type="button">${t("common.reset")}</button>
-            </div>
-          </section>
-
-          <section class="settings-section">
-            <div class="section-labels">
-              <span class="section-title">${t("settings.uiOpacity")}</span>
-              <small class="section-hint section-value-pill"><strong id="backgroundOpacityValue">35%</strong></small>
-            </div>
-            <div class="opacity-control">
-              <input id="backgroundOpacityInput" type="range" min="0" max="100" step="1" value="19" />
-            </div>
-          </section>
-        </div>
-
-        <div class="toggle-grid">
+        <section class="settings-section settings-section-toggles">
           <label class="toggle">
             <input id="panelBlurInput" type="checkbox" />
             <span class="toggle-control" aria-hidden="true"></span>
@@ -252,9 +245,107 @@ document.querySelector("#app").innerHTML = `
               <strong>${t("settings.exitTitle")}</strong>
             </span>
           </label>
+        </section>
+
+        <section class="settings-section settings-section-paths">
+          <label class="field path-field path-field-required">
+            <span>${t("settings.gameDirectory")}</span>
+            <div class="path-row">
+              <input id="gamePathInput" readonly placeholder="${t("settings.gameDirectoryPlaceholder")}" />
+              <div class="inline-actions">
+                <button class="button button-solid path-button" id="browseGamePathBtn" type="button">${t("common.browse")}</button>
+                <button class="button button-ghost path-button" id="clearGamePathBtn" type="button">${t("common.clear")}</button>
+              </div>
+            </div>
+          </label>
+          <label class="field path-field path-field-optional">
+            <span>${t("settings.launcherPath")}</span>
+            <div class="path-row">
+              <input id="launcherPathInput" autocomplete="off" placeholder="${t("settings.launcherPathPlaceholder")}" />
+              <div class="inline-actions">
+                <button class="button button-solid path-button" id="browseLauncherPathBtn" type="button">${t("common.browse")}</button>
+                <button class="button button-ghost path-button" id="clearLauncherPathBtn" type="button">${t("common.clear")}</button>
+              </div>
+            </div>
+          </label>
+        </section>
+
+        <div class="settings-split">
+          <section class="settings-section background-section">
+            <div class="section-labels">
+              <span class="section-title">${t("settings.background")}</span>
+              <small class="section-hint section-status-pill" id="backgroundStatusValue" data-tone="warn">${t("settings.backgroundUnset")}</small>
+            </div>
+            <div class="background-actions">
+              <button class="button button-solid path-button" id="browseBackgroundBtn" type="button">${t("common.browse")}</button>
+              <button class="button button-ghost path-button" id="resetBackgroundBtn" type="button">${t("common.reset")}</button>
+            </div>
+          </section>
+
+          <section class="settings-section opacity-section">
+            <div class="section-labels">
+              <span class="section-title">${t("settings.uiOpacity")}</span>
+              <small class="section-hint section-value-pill"><strong id="backgroundOpacityValue">35%</strong></small>
+            </div>
+            <div class="opacity-control">
+              <input id="backgroundOpacityInput" type="range" min="0" max="100" step="1" value="19" />
+            </div>
+          </section>
+
+          <section class="settings-section buildinfo-section">
+            <div class="section-labels">
+              <span class="section-title">${buildInfoText("title")}</span>
+            </div>
+            <div class="buildinfo-list">
+              <div class="buildinfo-item">
+                <span class="buildinfo-label">${buildInfoText("version")}</span>
+                <strong class="buildinfo-value" id="buildVersionValue">-</strong>
+              </div>
+              <div class="buildinfo-item">
+                <span class="buildinfo-label">${buildInfoText("buildDate")}</span>
+                <strong class="buildinfo-value" id="buildDateValue">-</strong>
+              </div>
+              <div class="buildinfo-item">
+                <span class="buildinfo-label">${buildInfoText("developer")}</span>
+                <strong class="buildinfo-value" id="buildDeveloperValue">-</strong>
+              </div>
+            </div>
+          </section>
         </div>
+
       </div>
     </aside>
+
+    <section class="update-overlay" id="updateOverlay" hidden>
+      <article class="update-modal panel">
+        <header class="update-head">
+          <div class="update-title-wrap">
+            <div class="update-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M12 2 1.8 20.5a1 1 0 0 0 .87 1.5h18.66a1 1 0 0 0 .87-1.5L12 2Zm0 6.2a1 1 0 0 1 1 1v4.8a1 1 0 1 1-2 0V9.2a1 1 0 0 1 1-1Zm0 10.1a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5Z"/>
+              </svg>
+            </div>
+            <div>
+              <h2 id="updateTitle">${t("update.title")}</h2>
+            </div>
+          </div>
+          <button class="button button-solid captcha-close" id="updateCloseBtn" type="button">${t("common.close")}</button>
+        </header>
+        <p class="update-copy" id="updateCopy"></p>
+        <div class="update-version-grid">
+          <div class="update-version-card">
+            <span>${t("update.localLabel")}</span>
+            <strong id="updateLocalValue">-</strong>
+          </div>
+          <div class="update-version-card">
+            <span>${t("update.remoteLabel")}</span>
+            <strong id="updateRemoteValue">-</strong>
+          </div>
+        </div>
+        <p class="update-note" id="updateNote"></p>
+        <div class="update-actions" id="updateActions"></div>
+      </article>
+    </section>
 
     <section class="captcha-overlay" id="captchaOverlay" hidden>
       <article class="captcha-modal">
@@ -339,7 +430,9 @@ const elements = {
   backgroundOpacityInput: document.getElementById("backgroundOpacityInput"),
   backgroundOpacityValue: document.getElementById("backgroundOpacityValue"),
   backgroundStatusValue: document.getElementById("backgroundStatusValue"),
-  pathHintValue: document.getElementById("pathHintValue"),
+  buildVersionValue: document.getElementById("buildVersionValue"),
+  buildDateValue: document.getElementById("buildDateValue"),
+  buildDeveloperValue: document.getElementById("buildDeveloperValue"),
   panelBlurInput: document.getElementById("panelBlurInput"),
   autoWindowCaptureInput: document.getElementById("autoWindowCaptureInput"),
   autoCloseInput: document.getElementById("autoCloseInput"),
@@ -350,6 +443,14 @@ const elements = {
   settingsBackdrop: document.getElementById("settingsBackdrop"),
   settingsSheet: document.getElementById("settingsSheet"),
   settingsCloseBtn: document.getElementById("settingsCloseBtn"),
+  updateOverlay: document.getElementById("updateOverlay"),
+  updateTitle: document.getElementById("updateTitle"),
+  updateCopy: document.getElementById("updateCopy"),
+  updateLocalValue: document.getElementById("updateLocalValue"),
+  updateRemoteValue: document.getElementById("updateRemoteValue"),
+  updateNote: document.getElementById("updateNote"),
+  updateActions: document.getElementById("updateActions"),
+  updateCloseBtn: document.getElementById("updateCloseBtn"),
   browseGamePathBtn: document.getElementById("browseGamePathBtn"),
   clearGamePathBtn: document.getElementById("clearGamePathBtn"),
   browseLauncherPathBtn: document.getElementById("browseLauncherPathBtn"),
@@ -380,6 +481,8 @@ let latestConfigView = {};
 let latestState = null;
 let lastScanHintToastKey = "";
 let monitorPauseRequested = false;
+let pendingGameUpdateReason = "";
+let updateDialogState = null;
 let authSheetMode = "existing";
 let authSheetContext = {
   baselineAccount: "",
@@ -911,6 +1014,7 @@ function populateLocaleOptions() {
       if (!persisted) {
         return;
       }
+      markSkipUpdatePromptOnce();
       applyLocale(locale);
     });
     elements.localeMenu.append(option);
@@ -1096,6 +1200,124 @@ function closeSettings() {
   closeAccountMenu();
 }
 
+function queueGameUpdatePrompt(reason) {
+  const normalized = String(reason || "").trim();
+  if (!normalized) {
+    return;
+  }
+  if (normalized === "startup" && consumeSkipUpdatePromptOnce()) {
+    return;
+  }
+  pendingGameUpdateReason = normalized;
+  void flushQueuedGameUpdatePrompt();
+}
+
+async function fetchGameUpdatePrompt({ showError = false } = {}) {
+  try {
+    return await CheckGameUpdate();
+  } catch (error) {
+    if (showError) {
+      showPayload(formatError(error), "warn");
+    }
+    return null;
+  }
+}
+
+async function flushQueuedGameUpdatePrompt() {
+  if (!pendingGameUpdateReason || updateDialogState || !latestState) {
+    return;
+  }
+  if (!latestState.gamePathValid || latestState.runtimePreparing || !latestState.apiReady) {
+    return;
+  }
+
+  const reason = pendingGameUpdateReason;
+  pendingGameUpdateReason = "";
+
+  const prompt = await fetchGameUpdatePrompt();
+  if (!prompt?.outdated) {
+    return;
+  }
+  openUpdateDialog(prompt, { reason, manualOnly: !prompt.launcherAvailable });
+}
+
+function openUpdateDialog(prompt, { reason = "", manualOnly = false } = {}) {
+  updateDialogState = {
+    prompt,
+    reason: String(reason || "").trim(),
+    manualOnly: Boolean(manualOnly),
+  };
+
+  elements.updateTitle.textContent = t("update.title");
+  elements.updateCopy.textContent = t("update.summary", {
+    local: prompt?.localVersion || t("common.unknown"),
+    remote: prompt?.remoteVersion || t("common.unknown"),
+  });
+  elements.updateLocalValue.textContent = prompt?.localVersion || t("common.unknown");
+  elements.updateRemoteValue.textContent = prompt?.remoteVersion || t("common.unknown");
+  elements.updateNote.textContent = manualOnly
+    ? t("update.manualMessage")
+    : t("update.promptMessage");
+  elements.updateActions.innerHTML = "";
+
+  if (manualOnly) {
+    elements.updateActions.dataset.layout = "single";
+    const okButton = document.createElement("button");
+    okButton.type = "button";
+    okButton.className = "button button-accent";
+    okButton.textContent = updateAckText();
+    okButton.addEventListener("click", () => {
+      closeUpdateDialog();
+    });
+    elements.updateActions.append(okButton);
+  } else {
+    elements.updateActions.dataset.layout = "double";
+    const laterButton = document.createElement("button");
+    laterButton.type = "button";
+    laterButton.className = "button button-solid";
+    laterButton.textContent = t("update.later");
+    laterButton.addEventListener("click", () => {
+      transitionUpdateDialogToManual();
+    });
+
+    const launchButton = document.createElement("button");
+    launchButton.type = "button";
+    launchButton.className = "button button-accent";
+    launchButton.textContent = t("update.openLauncher");
+    launchButton.addEventListener("click", async () => {
+      try {
+        await LaunchUpdater();
+        showPayload(t("update.launcherOpened"), "soft");
+      } catch (error) {
+        showPayload(formatError(error), "error");
+        transitionUpdateDialogToManual();
+        return;
+      }
+      closeUpdateDialog();
+    });
+
+    elements.updateActions.append(laterButton, launchButton);
+  }
+
+  elements.updateOverlay.hidden = false;
+}
+
+function closeUpdateDialog() {
+  updateDialogState = null;
+  elements.updateOverlay.hidden = true;
+  void flushQueuedGameUpdatePrompt();
+}
+
+function transitionUpdateDialogToManual() {
+  if (!updateDialogState) {
+    return;
+  }
+  openUpdateDialog(updateDialogState.prompt, {
+    reason: updateDialogState.reason,
+    manualOnly: true,
+  });
+}
+
 function syncCaptcha(state) {
   const pending = Boolean(state.captchaPending && state.captchaURL);
   const url = pending ? String(state.captchaURL) : "";
@@ -1134,6 +1356,7 @@ function renderState(state) {
     Math.max(20, Math.min(100, Number(cfg.background_opacity ?? cfg.backgroundOpacity ?? 0.35) * 100)),
   );
   const panelBlur = cfg.panel_blur ?? cfg.panelBlur ?? true;
+  const build = state.buildInfo || state.build_info || {};
   const windowStatus = formatWindowStatus(state);
   const session = formatSessionStatus(state, cfg);
   const api = formatAPIStatus(state, cfg);
@@ -1150,10 +1373,7 @@ function renderState(state) {
   setStatus(elements.gameDot, elements.gameValue, gameTone, gameText);
 
   elements.actionValue.textContent = formatActionValue(state.lastAction);
-  const pathHintText = translateMessage(state.gamePathMessage, state.gamePathPrompt || "");
   elements.errorValue.textContent = formatErrorValue(state.lastError, state.lastErrorMessage);
-  elements.pathHintValue.hidden = !pathHintText;
-  elements.pathHintValue.textContent = pathHintText;
 
   const hintCode = String(state?.lastErrorMessage?.code ?? "").trim();
   if (windowScanHintCodes.has(hintCode) && elements.authOverlay.hidden && elements.captchaOverlay.hidden) {
@@ -1172,6 +1392,9 @@ function renderState(state) {
   syncInputValue(elements.loaderApiInput, normalizeLoaderAPIAddress(cfg.loader_api_base_url ?? cfg.loaderApiBaseURL ?? ""));
   syncInputValue(elements.gamePathInput, gamePath);
   syncInputValue(elements.launcherPathInput, launcherPath);
+  elements.buildVersionValue.textContent = build.version || "-";
+  elements.buildDateValue.textContent = build.buildDate || build.build_date || "-";
+  elements.buildDeveloperValue.textContent = build.developer || "-";
   syncRangeValue(elements.backgroundOpacityInput, opacityPercentToSlider(backgroundOpacity));
   previewOpacity(opacityPercentToSlider(backgroundOpacity));
   elements.backgroundStatusValue.textContent = hasBackgroundImage ? t("settings.backgroundSet") : t("settings.backgroundUnset");
@@ -1200,6 +1423,7 @@ function renderState(state) {
   setLocaleTriggerLabel(getLocale());
 
   syncCaptcha(state);
+  void flushQueuedGameUpdatePrompt();
 }
 
 function formatError(error) {
@@ -1234,6 +1458,8 @@ async function persistSettings({ showToast = true, closeSheet = false } = {}) {
   const currentGamePath = String(currentCfg.game_path ?? currentCfg.gamePath ?? "");
   const currentLauncherPath = String(currentCfg.launcher_path ?? currentCfg.launcherPath ?? "");
   const nextLauncherPath = String(elements.launcherPathInput.value ?? "").trim();
+  const gamePathChanged = nextGamePath !== currentGamePath;
+  const launcherPathChanged = nextLauncherPath !== currentLauncherPath;
   const nextOpacity = sliderToOpacityPercent(elements.backgroundOpacityInput.value) / 100;
   const currentOpacity = Number(currentCfg.background_opacity ?? currentCfg.backgroundOpacity ?? 0.35);
   const needsFeatureSave =
@@ -1242,7 +1468,7 @@ async function persistSettings({ showToast = true, closeSheet = false } = {}) {
     nextAutoWindowCapture !== currentAutoWindowCapture ||
     nextPanelBlur !== currentPanelBlur ||
     Math.abs(nextOpacity - currentOpacity) > 0.0001;
-  const needsLauncherSave = nextLauncherPath !== currentLauncherPath;
+  const needsLauncherSave = launcherPathChanged;
 
   if (!needsCredentialSave && !needsFeatureSave && !needsLauncherSave) {
     if (closeSheet) {
@@ -1291,6 +1517,9 @@ async function persistSettings({ showToast = true, closeSheet = false } = {}) {
     if (needsFeatureSave) {
       await refreshBackground();
     }
+    if ((gamePathChanged || launcherPathChanged) && state.gamePathValid) {
+      queueGameUpdatePrompt("path_saved");
+    }
   }
 
   if (showToast) {
@@ -1330,6 +1559,18 @@ elements.settingsCloseBtn.addEventListener("click", async () => {
 });
 elements.settingsBackdrop.addEventListener("click", async () => {
   await persistSettings({ showToast: false, closeSheet: true });
+});
+elements.updateCloseBtn.addEventListener("click", () => {
+  if (updateDialogState?.manualOnly) {
+    closeUpdateDialog();
+    return;
+  }
+  transitionUpdateDialogToManual();
+});
+elements.updateOverlay.addEventListener("click", (event) => {
+  if (event.target === elements.updateOverlay) {
+    event.preventDefault();
+  }
 });
 elements.loaderApiInput.addEventListener("blur", () => {
   const normalized = normalizeLoaderAPIAddress(elements.loaderApiInput.value ?? "");
@@ -1382,6 +1623,9 @@ elements.browseGamePathBtn.addEventListener("click", async () => {
   );
   if (state) {
     renderState(state);
+    if (state.gamePathValid) {
+      queueGameUpdatePrompt("path_saved");
+    }
   }
 });
 
@@ -1421,6 +1665,9 @@ elements.browseLauncherPathBtn.addEventListener("click", async () => {
   );
   if (state) {
     renderState(state);
+    if (state.gamePathValid) {
+      queueGameUpdatePrompt("path_saved");
+    }
   }
 });
 
@@ -1585,6 +1832,15 @@ elements.authSubmitBtn.addEventListener("click", async () => {
 });
 
 elements.launchGameBtn.addEventListener("click", async () => {
+  if (latestState?.runtimePreparing) {
+    showPayload(t("update.pending"), "warn");
+    return;
+  }
+  const update = await fetchGameUpdatePrompt();
+  if (update?.outdated) {
+    openUpdateDialog(update, { reason: "launch", manualOnly: !update.launcherAvailable });
+    return;
+  }
   const result = await runTask(
     () => LaunchGame(),
     () => ({ launched: true, gamePath: elements.gamePathInput.value || null }),
@@ -1663,6 +1919,7 @@ Bootstrap()
       showPayload(translateMessage(state.gamePathMessage, state.gamePathPrompt || t("status.selectPathFirst")), "warn");
       return;
     }
+    queueGameUpdatePrompt("startup");
     showPayload(
         {
           session: formatSessionStatus(state, state.config || {}).text,

@@ -21,6 +21,7 @@ const (
 	moduleStartTimeout   = 30 * time.Second
 	moduleProbeInterval  = 300 * time.Millisecond
 	moduleLoopbackHost   = "127.0.0.1"
+	moduleCreateNoWindow = 0x08000000
 )
 
 type moduleRuntime struct {
@@ -99,7 +100,10 @@ func (m *moduleRuntime) start(endpoint string) error {
 
 	cmd := exec.Command(m.exePath, "--background", "--addr", strings.TrimPrefix(endpoint, "https://"))
 	cmd.Dir = m.baseDir
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: moduleCreateNoWindow,
+	}
 
 	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err == nil {
@@ -158,6 +162,10 @@ Get-CimInstance Win32_Process -Filter ("Name='" + $name.Replace("'", "''") + "'"
 		"-Command",
 		script,
 	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: moduleCreateNoWindow,
+	}
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("stop existing %s: %w (%s)", moduleExecutableName, err, strings.TrimSpace(string(output)))
 	}

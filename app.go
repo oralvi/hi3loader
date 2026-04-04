@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"hi3loader/internal/service"
 
@@ -13,10 +12,8 @@ import (
 )
 
 type App struct {
-	ctx                        context.Context
-	svc                        *service.Service
-	updatePromptMu             sync.Mutex
-	startupUpdatePromptPending bool
+	ctx context.Context
+	svc *service.Service
 }
 
 func NewApp(svc *service.Service) *App {
@@ -34,7 +31,6 @@ func (a *App) startup(ctx context.Context) {
 			if state.QuitRequested {
 				runtime.EventsEmit(ctx, "quit-requested", state)
 			}
-			a.maybePromptGameUpdateWhenReady(state)
 		},
 	})
 }
@@ -44,37 +40,7 @@ func (a *App) shutdown(ctx context.Context) {
 }
 
 func (a *App) Bootstrap() (service.State, error) {
-	state, err := a.svc.Bootstrap(context.Background())
-	if err == nil {
-		a.setStartupUpdatePromptPending(strings.TrimSpace(state.Config.GamePath) != "")
-		a.maybePromptGameUpdateWhenReady(state)
-	}
-	return state, err
-}
-
-func (a *App) setStartupUpdatePromptPending(pending bool) {
-	a.updatePromptMu.Lock()
-	a.startupUpdatePromptPending = pending
-	a.updatePromptMu.Unlock()
-}
-
-func (a *App) maybePromptGameUpdateWhenReady(state service.State) {
-	if a == nil || a.svc == nil {
-		return
-	}
-	if strings.TrimSpace(state.Config.GamePath) == "" || state.RuntimePreparing || !state.APIReady {
-		return
-	}
-
-	a.updatePromptMu.Lock()
-	if !a.startupUpdatePromptPending {
-		a.updatePromptMu.Unlock()
-		return
-	}
-	a.startupUpdatePromptPending = false
-	a.updatePromptMu.Unlock()
-
-	a.maybePromptGameUpdateOnStartup()
+	return a.svc.Bootstrap(context.Background())
 }
 
 func (a *App) LogSnapshot() []service.LogEntry {
@@ -82,16 +48,7 @@ func (a *App) LogSnapshot() []service.LogEntry {
 }
 
 func (a *App) SaveFeatureSettings(gamePath string, autoClose, autoClip, panelBlur bool, opacity float64) (service.State, error) {
-	previousGamePath := ""
-	if cfg := a.svc.Config(); cfg != nil {
-		previousGamePath = cfg.GamePath
-	}
-
-	state, err := a.svc.SaveFeatureSettings(strings.TrimSpace(gamePath), autoClose, autoClip, panelBlur, opacity)
-	if err == nil && shouldPromptGameUpdateAfterSave(previousGamePath, state.Config.GamePath) {
-		a.maybePromptGameUpdateAfterSave()
-	}
-	return state, err
+	return a.svc.SaveFeatureSettings(strings.TrimSpace(gamePath), autoClose, autoClip, panelBlur, opacity)
 }
 
 func (a *App) UpdateBackground(backgroundPath string, opacity float64) (service.State, error) {
@@ -120,6 +77,14 @@ func (a *App) ResumeMonitor() {
 
 func (a *App) LaunchGame() error {
 	return a.svc.LaunchGame()
+}
+
+func (a *App) CheckGameUpdate() (service.GameUpdatePrompt, error) {
+	return a.svc.CheckGameUpdate(context.Background())
+}
+
+func (a *App) LaunchUpdater() error {
+	return a.svc.LaunchUpdater()
 }
 
 func (a *App) BrowseGamePath() (string, error) {

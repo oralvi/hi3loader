@@ -52,11 +52,17 @@ type storedSavedAccountJSON struct {
 }
 
 type sessionSecretEnvelope struct {
-	Password  string `json:"password,omitempty"`
-	AccessKey string `json:"access_key,omitempty"`
+	Password  string                `json:"password,omitempty"`
+	AccessKey string                `json:"access_key,omitempty"`
+	Device    *deviceSecretEnvelope `json:"device,omitempty"`
 }
 
 type deviceSecretEnvelope struct {
+	PresetID        string `json:"preset_id,omitempty"`
+	Model           string `json:"model,omitempty"`
+	Brand           string `json:"brand,omitempty"`
+	SupportABIs     string `json:"support_abis,omitempty"`
+	Display         string `json:"display,omitempty"`
 	AndroidID       string `json:"android_id,omitempty"`
 	MACAddress      string `json:"mac,omitempty"`
 	IMEI            string `json:"imei,omitempty"`
@@ -171,13 +177,17 @@ func encodeStoredSavedAccount(entry SavedAccount) (storedSavedAccountJSON, error
 		UName:         normalizeString(entry.UName),
 		LastLoginSucc: entry.LastLoginSucc,
 	}
-	if strings.TrimSpace(entry.Password) == "" && strings.TrimSpace(entry.AccessKey) == "" {
+	if strings.TrimSpace(entry.Password) == "" && strings.TrimSpace(entry.AccessKey) == "" && !entry.DeviceProfile.IsComplete() {
 		return stored, nil
 	}
-	raw, err := json.Marshal(sessionSecretEnvelope{
+	secret := sessionSecretEnvelope{
 		Password:  normalizeString(entry.Password),
 		AccessKey: normalizeString(entry.AccessKey),
-	})
+	}
+	if envelope := newDeviceSecretEnvelope(entry.DeviceProfile); envelope != nil {
+		secret.Device = envelope
+	}
+	raw, err := json.Marshal(secret)
 	if err != nil {
 		return stored, fmt.Errorf("encode session blob: %w", err)
 	}
@@ -226,6 +236,9 @@ func decodeStoredSavedAccount(entry storedSavedAccountJSON) (SavedAccount, error
 	}
 	decoded.Password = normalizeString(secret.Password)
 	decoded.AccessKey = normalizeString(secret.AccessKey)
+	if secret.Device != nil {
+		decoded.DeviceProfile = deviceProfileFromSecretEnvelope(*secret.Device)
+	}
 	if decoded.AccessKey == "" {
 		decoded.LastLoginSucc = false
 	}
@@ -236,14 +249,7 @@ func encodeStoredDeviceProfile(profile DeviceProfile) (string, error) {
 	if !profile.IsComplete() {
 		return "", nil
 	}
-	raw, err := json.Marshal(deviceSecretEnvelope{
-		AndroidID:       normalizeString(profile.AndroidID),
-		MACAddress:      normalizeString(profile.MACAddress),
-		IMEI:            normalizeString(profile.IMEI),
-		RuntimeUDID:     normalizeString(profile.RuntimeUDID),
-		UserProfileUDID: normalizeString(profile.UserProfileUDID),
-		CurBuvid:        normalizeString(profile.CurBuvid),
-	})
+	raw, err := json.Marshal(newDeviceSecretEnvelope(profile))
 	if err != nil {
 		return "", fmt.Errorf("encode device blob: %w", err)
 	}
@@ -266,7 +272,35 @@ func decodeStoredDeviceProfile(blob string) DeviceProfile {
 	if err := json.Unmarshal(raw, &secret); err != nil {
 		return DeviceProfile{}
 	}
+	return deviceProfileFromSecretEnvelope(secret)
+}
+
+func newDeviceSecretEnvelope(profile DeviceProfile) *deviceSecretEnvelope {
+	if !profile.IsComplete() {
+		return nil
+	}
+	return &deviceSecretEnvelope{
+		PresetID:        normalizeString(profile.PresetID),
+		Model:           normalizeString(profile.Model),
+		Brand:           normalizeString(profile.Brand),
+		SupportABIs:     normalizeString(profile.SupportABIs),
+		Display:         normalizeString(profile.Display),
+		AndroidID:       normalizeString(profile.AndroidID),
+		MACAddress:      normalizeString(profile.MACAddress),
+		IMEI:            normalizeString(profile.IMEI),
+		RuntimeUDID:     normalizeString(profile.RuntimeUDID),
+		UserProfileUDID: normalizeString(profile.UserProfileUDID),
+		CurBuvid:        normalizeString(profile.CurBuvid),
+	}
+}
+
+func deviceProfileFromSecretEnvelope(secret deviceSecretEnvelope) DeviceProfile {
 	return DeviceProfile{
+		PresetID:        normalizeString(secret.PresetID),
+		Model:           normalizeString(secret.Model),
+		Brand:           normalizeString(secret.Brand),
+		SupportABIs:     normalizeString(secret.SupportABIs),
+		Display:         normalizeString(secret.Display),
 		AndroidID:       normalizeString(secret.AndroidID),
 		MACAddress:      normalizeString(secret.MACAddress),
 		IMEI:            normalizeString(secret.IMEI),

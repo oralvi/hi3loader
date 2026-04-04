@@ -12,15 +12,21 @@ import (
 const DefaultAsteriskName = "HI3LoaderV1"
 
 type SavedAccount struct {
-	Account       string `json:"account"`
-	Password      string `json:"-"`
-	UID           int64  `json:"uid,omitempty"`
-	AccessKey     string `json:"-"`
-	UName         string `json:"uname,omitempty"`
-	LastLoginSucc bool   `json:"last_login_succ,omitempty"`
+	Account       string        `json:"account"`
+	Password      string        `json:"-"`
+	UID           int64         `json:"uid,omitempty"`
+	AccessKey     string        `json:"-"`
+	UName         string        `json:"uname,omitempty"`
+	LastLoginSucc bool          `json:"last_login_succ,omitempty"`
+	DeviceProfile DeviceProfile `json:"-"`
 }
 
 type DeviceProfile struct {
+	PresetID        string `json:"-"`
+	Model           string `json:"-"`
+	Brand           string `json:"-"`
+	SupportABIs     string `json:"-"`
+	Display         string `json:"-"`
 	AndroidID       string `json:"-"`
 	MACAddress      string `json:"-"`
 	IMEI            string `json:"-"`
@@ -243,6 +249,7 @@ func normalizeSavedAccount(entry *SavedAccount) bool {
 	normalizeStringField(&entry.Password)
 	normalizeStringField(&entry.AccessKey)
 	normalizeStringField(&entry.UName)
+	normalizeDeviceProfile(&entry.DeviceProfile)
 	if entry.Account == "" {
 		return false
 	}
@@ -262,6 +269,11 @@ func normalizeDeviceProfile(profile *DeviceProfile) bool {
 		return false
 	}
 	changed := false
+	changed = normalizeStringField(&profile.PresetID) || changed
+	changed = normalizeStringField(&profile.Model) || changed
+	changed = normalizeStringField(&profile.Brand) || changed
+	changed = normalizeStringField(&profile.SupportABIs) || changed
+	changed = normalizeStringField(&profile.Display) || changed
 	changed = normalizeStringField(&profile.AndroidID) || changed
 	changed = normalizeStringField(&profile.MACAddress) || changed
 	changed = normalizeStringField(&profile.IMEI) || changed
@@ -272,7 +284,11 @@ func normalizeDeviceProfile(profile *DeviceProfile) bool {
 }
 
 func (p DeviceProfile) IsComplete() bool {
-	return strings.TrimSpace(p.AndroidID) != "" &&
+	return strings.TrimSpace(p.Model) != "" &&
+		strings.TrimSpace(p.Brand) != "" &&
+		strings.TrimSpace(p.SupportABIs) != "" &&
+		strings.TrimSpace(p.Display) != "" &&
+		strings.TrimSpace(p.AndroidID) != "" &&
 		strings.TrimSpace(p.MACAddress) != "" &&
 		strings.TrimSpace(p.IMEI) != "" &&
 		strings.TrimSpace(p.RuntimeUDID) != "" &&

@@ -6,35 +6,35 @@ import (
 )
 
 const (
-	sdkCurBuvid = "XZA2FA4AC240F665E2F27F603ABF98C615C29"
-	sdkMerchantID  = "777"
-	sdkSupportABIs = "arm64-v8a,armeabi-v7a,armeabi"
-	sdkAPKSign      = "4502a02a00395dec05a4134ad593224d"
-	sdkPlatformType = "3"
-	sdkOperators    = "5"
-	sdkModel        = "MuMu"
-	sdkBrand        = "Android"
-	sdkGameID = "180"
-	sdkAppID   = "180"
-	sdkVersion = "1"
-	sdkGameVer          = "6.1.0"
-	sdkChannelID        = "1"
-	sdkChannelIDNumeric = 1
+	sdkCurBuvid          = "XZA2FA4AC240F665E2F27F603ABF98C615C29"
+	sdkMerchantID        = "777"
+	sdkSupportABIs       = "arm64-v8a,armeabi-v7a,armeabi"
+	sdkAPKSign           = "4502a02a00395dec05a4134ad593224d"
+	sdkPlatformType      = "3"
+	sdkOperators         = "5"
+	sdkModel             = "MuMu"
+	sdkBrand             = "Android"
+	sdkGameID            = "180"
+	sdkAppID             = "180"
+	sdkVersion           = "1"
+	sdkGameVer           = "6.1.0"
+	sdkChannelID         = "1"
+	sdkChannelIDNumeric  = 1
 	sdkVersionCode       = "510"
 	sdkServerID          = "378"
 	sdkDomainSwitchCount = "0"
 	sdkPFVer             = "12"
 	sdkSDKLogType        = "1"
-	sdkSDKVer          = "5.9.0"
-	sdkDomain          = "line1-sdk-center-login-sh.biligame.net"
-	sdkDisplay         = "1280*720"
-	sdkAndroidID       = "84567e2dda72d1d4"
-	sdkMACAddress      = "08:00:27:53:DD:12"
-	sdkRuntimeUDID     = "KREhESMUIhUjFnJKNko2TDQFYlZkB3cdeQ=="
-	sdkUserProfileUDID = "XXA31CBAB6CBA63E432E087B58411A213BFB7"
-	sdkNetUserProfile  = "5"
-	sdkNetDefault      = "4"
-	sdkCaptchaType     = "1"
+	sdkSDKVer            = "5.9.0"
+	sdkDomain            = "line1-sdk-center-login-sh.biligame.net"
+	sdkDisplay           = "1280*720"
+	sdkAndroidID         = "84567e2dda72d1d4"
+	sdkMACAddress        = "08:00:27:53:DD:12"
+	sdkRuntimeUDID       = "KREhESMUIhUjFnJKNko2TDQFYlZkB3cdeQ=="
+	sdkUserProfileUDID   = "XXA31CBAB6CBA63E432E087B58411A213BFB7"
+	sdkNetUserProfile    = "5"
+	sdkNetDefault        = "4"
+	sdkCaptchaType       = "1"
 )
 
 type payloadField struct {
@@ -56,6 +56,10 @@ type RuntimeProfile struct {
 }
 
 type DeviceProfile struct {
+	Model           string
+	Brand           string
+	SupportABIs     string
+	Display         string
 	AndroidID       string
 	MACAddress      string
 	IMEI            string
@@ -234,12 +238,12 @@ func buildEffectiveSDKProfile(runtime RuntimeProfile, device DeviceProfile) effe
 	return effectiveSDKProfile{
 		CurBuvid:          fallbackString(device.CurBuvid, sdkCurBuvid),
 		MerchantID:        fallbackString(runtime.CPID, sdkMerchantID),
-		SupportABIs:       sdkSupportABIs,
+		SupportABIs:       fallbackString(device.SupportABIs, sdkSupportABIs),
 		APKSign:           sdkAPKSign,
 		PlatformType:      sdkPlatformType,
 		Operators:         sdkOperators,
-		Model:             sdkModel,
-		Brand:             sdkBrand,
+		Model:             fallbackString(device.Model, sdkModel),
+		Brand:             fallbackString(device.Brand, sdkBrand),
 		GameID:            sdkGameID,
 		AppID:             sdkAppID,
 		Version:           sdkVersion,
@@ -253,7 +257,7 @@ func buildEffectiveSDKProfile(runtime RuntimeProfile, device DeviceProfile) effe
 		SDKLogType:        sdkSDKLogType,
 		SDKVer:            fallbackString(runtime.SDKVer, sdkSDKVer),
 		Domain:            sdkDomain,
-		Display:           sdkDisplay,
+		Display:           fallbackString(device.Display, sdkDisplay),
 		AndroidID:         fallbackString(device.AndroidID, sdkAndroidID),
 		MACAddress:        fallbackString(device.MACAddress, sdkMACAddress),
 		RuntimeUDID:       fallbackString(device.RuntimeUDID, sdkRuntimeUDID),

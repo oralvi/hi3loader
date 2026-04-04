@@ -14,38 +14,7 @@ const (
 )
 
 func GenerateDeviceProfile() (DeviceProfile, error) {
-	androidID, err := randomString(deviceHexAlphabet, 16)
-	if err != nil {
-		return DeviceProfile{}, err
-	}
-	macAddress, err := randomMACAddress()
-	if err != nil {
-		return DeviceProfile{}, err
-	}
-	imei, err := randomIMEI()
-	if err != nil {
-		return DeviceProfile{}, err
-	}
-	runtimeUDID, err := randomString(deviceUpperAlphaNum, 36)
-	if err != nil {
-		return DeviceProfile{}, err
-	}
-	userProfileUDID, err := prefixedRandomString("XXA", deviceUpperAlphaNum, 34)
-	if err != nil {
-		return DeviceProfile{}, err
-	}
-	curBuvid, err := prefixedRandomString("XZA", deviceUpperAlphaNum, 34)
-	if err != nil {
-		return DeviceProfile{}, err
-	}
-	return DeviceProfile{
-		AndroidID:       androidID,
-		MACAddress:      macAddress,
-		IMEI:            imei,
-		RuntimeUDID:     runtimeUDID,
-		UserProfileUDID: userProfileUDID,
-		CurBuvid:        curBuvid,
-	}, nil
+	return CompleteDeviceProfile(DeviceProfile{})
 }
 
 func prefixedRandomString(prefix, alphabet string, suffixLen int) (string, error) {

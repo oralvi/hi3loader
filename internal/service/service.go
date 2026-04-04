@@ -665,7 +665,7 @@ func (s *Service) EnsureSession(ctx context.Context) error {
 	if strings.TrimSpace(active.AccessKey) == "" {
 		return fmt.Errorf("missing cached access_key")
 	}
-	if err := s.prepareBSGameSDK(ctx); err != nil {
+	if err := s.prepareBSGameSDK(ctx, strings.TrimSpace(active.Account)); err != nil {
 		return err
 	}
 
@@ -1252,7 +1252,11 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 	requestedAccount := strings.TrimSpace(account)
 	active, _ := cfg.CurrentSavedAccount()
 	canReuseStoredPassword := requestedAccount == "" || strings.EqualFold(strings.TrimSpace(active.Account), requestedAccount)
-	if err := s.prepareBSGameSDK(ctx); err != nil {
+	accountHint := requestedAccount
+	if accountHint == "" {
+		accountHint = strings.TrimSpace(active.Account)
+	}
+	if err := s.prepareBSGameSDK(ctx, accountHint); err != nil {
 		return LoginResult{}, err
 	}
 	defer func() {
@@ -1690,8 +1694,8 @@ func (s *Service) refreshAPIHealth(ctx context.Context) error {
 	return err
 }
 
-func (s *Service) prepareBSGameSDK(ctx context.Context) error {
-	deviceProfile, err := s.ensureLocalDeviceProfile()
+func (s *Service) prepareBSGameSDK(ctx context.Context, accountHint string) error {
+	deviceProfile, err := s.ensureLocalDeviceProfile(accountHint)
 	if err != nil {
 		return err
 	}
@@ -1725,6 +1729,10 @@ func (s *Service) prepareBSGameSDK(ctx context.Context) error {
 			SDKVer:         runtimeProfile.SDKVer,
 		},
 		bsgamesdk.DeviceProfile{
+			Model:           deviceProfile.Model,
+			Brand:           deviceProfile.Brand,
+			SupportABIs:     deviceProfile.SupportABIs,
+			Display:         deviceProfile.Display,
 			AndroidID:       deviceProfile.AndroidID,
 			MACAddress:      deviceProfile.MACAddress,
 			IMEI:            deviceProfile.IMEI,
@@ -1736,23 +1744,49 @@ func (s *Service) prepareBSGameSDK(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) ensureLocalDeviceProfile() (config.DeviceProfile, error) {
+func (s *Service) ensureLocalDeviceProfile(accountHint string) (config.DeviceProfile, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.cfg == nil {
 		return config.DeviceProfile{}, fmt.Errorf("config is not loaded")
 	}
-	if s.cfg.DeviceProfile.IsComplete() {
-		return s.cfg.DeviceProfile, nil
+
+	accountHint = strings.TrimSpace(accountHint)
+	entry := config.SavedAccount{}
+	if accountHint != "" {
+		if existing, ok := s.cfg.FindSavedAccount(accountHint); ok {
+			entry = existing
+		} else {
+			entry = config.SavedAccount{Account: accountHint}
+		}
+	} else if current, ok := s.cfg.CurrentSavedAccount(); ok {
+		entry = current
+		accountHint = strings.TrimSpace(current.Account)
 	}
 
-	profile, err := config.GenerateDeviceProfile()
+	if entry.DeviceProfile.IsComplete() {
+		return entry.DeviceProfile, nil
+	}
+
+	baseProfile := entry.DeviceProfile
+	if !baseProfile.IsComplete() && s.cfg.DeviceProfile.IsComplete() {
+		baseProfile = s.cfg.DeviceProfile
+	}
+
+	profile, err := config.CompleteDeviceProfile(baseProfile)
 	if err != nil {
 		return config.DeviceProfile{}, err
 	}
 	nextCfg := s.cfg.Clone()
-	nextCfg.DeviceProfile = profile
+	if accountHint != "" {
+		entry.Account = accountHint
+		entry.DeviceProfile = profile
+		nextCfg.UpsertSavedAccount(entry)
+		nextCfg.DeviceProfile = config.DeviceProfile{}
+	} else {
+		nextCfg.DeviceProfile = profile
+	}
 	if err := config.Save(s.cfgPath, nextCfg); err != nil {
 		return config.DeviceProfile{}, err
 	}

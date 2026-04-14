@@ -21,6 +21,7 @@ type ConfigView struct {
 	AutoWindowCapture  bool               `json:"auto_window_capture"`
 	BackgroundOpacity  float64            `json:"background_opacity"`
 	PanelBlur          bool               `json:"panel_blur"`
+	RememberPassword   bool               `json:"remember_password"`
 	HasPassword        bool               `json:"has_password"`
 	HasAccessKey       bool               `json:"has_access_key"`
 	HasBackgroundImage bool               `json:"has_background_image"`
@@ -54,7 +55,8 @@ func buildConfigView(cfg *config.Config) ConfigView {
 		AutoWindowCapture:  cfg.AutoWindowCapture,
 		BackgroundOpacity:  cfg.BackgroundOpacity,
 		PanelBlur:          cfg.PanelBlur,
-		HasPassword:        strings.TrimSpace(active.Password) != "",
+		RememberPassword:   active.RememberPassword,
+		HasPassword:        active.RememberPassword && strings.TrimSpace(active.Password) != "",
 		HasAccessKey:       strings.TrimSpace(active.AccessKey) != "",
 		HasBackgroundImage: strings.TrimSpace(cfg.BackgroundImage) != "",
 	}

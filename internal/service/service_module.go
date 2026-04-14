@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/url"
@@ -10,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"hi3loader/internal/bridge"
@@ -21,7 +22,6 @@ const (
 	moduleStartTimeout   = 30 * time.Second
 	moduleProbeInterval  = 300 * time.Millisecond
 	moduleLoopbackHost   = "127.0.0.1"
-	moduleCreateNoWindow = 0x08000000
 )
 
 type moduleRuntime struct {
@@ -98,12 +98,14 @@ func (m *moduleRuntime) start(endpoint string) error {
 		return err
 	}
 
-	cmd := exec.Command(m.exePath, "--background", "--addr", strings.TrimPrefix(endpoint, "https://"))
-	cmd.Dir = m.baseDir
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: moduleCreateNoWindow,
+	args := []string{"--background", "--addr", strings.TrimPrefix(endpoint, "https://")}
+	if trustedHash, err := currentExecutableSHA256(); err == nil && trustedHash != "" {
+		args = append(args, "--trusted-client-hash", trustedHash)
 	}
+
+	cmd := exec.Command(m.exePath, args...)
+	cmd.Dir = m.baseDir
+	cmd.SysProcAttr = moduleSysProcAttr()
 
 	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err == nil {
@@ -162,10 +164,7 @@ Get-CimInstance Win32_Process -Filter ("Name='" + $name.Replace("'", "''") + "'"
 		"-Command",
 		script,
 	)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: moduleCreateNoWindow,
-	}
+	cmd.SysProcAttr = moduleSysProcAttr()
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("stop existing %s: %w (%s)", moduleExecutableName, err, strings.TrimSpace(string(output)))
 	}
@@ -300,4 +299,17 @@ func isLoopbackLoaderAPI(raw string) bool {
 	}
 	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
 	return host == "127.0.0.1" || host == "localhost"
+}
+
+func currentExecutableSHA256() (string, error) {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(exePath)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }

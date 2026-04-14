@@ -162,6 +162,7 @@ type Service struct {
 	loginMu             sync.Mutex
 	pendingAccount      string
 	pendingPassword     []byte
+	pendingRememberPass bool
 	pendingPasswordTTL  time.Time
 	pendingPasswordGen  uint64
 	pendingPasswordTmr  *time.Timer
@@ -567,8 +568,8 @@ func (s *Service) ResetQuitFlag() State {
 	return s.State()
 }
 
-func (s *Service) Login(ctx context.Context, account, password string, openBrowser bool) (LoginResult, error) {
-	return s.login(ctx, account, password, nil, openBrowser)
+func (s *Service) Login(ctx context.Context, account, password string, rememberPassword, openBrowser bool) (LoginResult, error) {
+	return s.login(ctx, account, password, rememberPassword, nil, openBrowser)
 }
 
 func (s *Service) SelectSavedAccount(account string) (State, error) {
@@ -707,7 +708,7 @@ func (s *Service) clearCachedSession(reason string) {
 	s.emitState()
 }
 
-func (s *Service) saveAccountStateLocked(account, password string, uid int64, accessKey, uname string, lastLoginSucc, accountLogin bool) error {
+func (s *Service) saveAccountStateLocked(account, password string, rememberPassword bool, uid int64, accessKey, uname string, lastLoginSucc, accountLogin bool) error {
 	entry, ok := s.cfg.CurrentSavedAccount()
 	account = strings.TrimSpace(account)
 	if account != "" {
@@ -726,6 +727,7 @@ func (s *Service) saveAccountStateLocked(account, password string, uid int64, ac
 		account = entry.Account
 	}
 	entry.Account = account
+	entry.RememberPassword = rememberPassword
 	if password != "" {
 		entry.Password = password
 	}
@@ -1230,7 +1232,7 @@ func (s *Service) rememberTicket(ticket string) bool {
 	return true
 }
 
-func (s *Service) login(ctx context.Context, account, password string, cap map[string]any, openBrowser bool) (LoginResult, error) {
+func (s *Service) login(ctx context.Context, account, password string, rememberPassword bool, cap map[string]any, openBrowser bool) (LoginResult, error) {
 	s.loginMu.Lock()
 	defer s.loginMu.Unlock()
 
@@ -1301,7 +1303,7 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 		if account == "" || password == "" {
 			return result, localizedErrorf("backend.error.credentials_required", nil, "account and password are required")
 		}
-		s.storePendingCredentials(account, password)
+		s.storePendingCredentials(account, password, rememberPassword)
 
 		loginResp, err := s.bili.Login(ctx, account, password, cap)
 		if err != nil {
@@ -1377,7 +1379,7 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 		}
 
 		s.mu.Lock()
-		saveErr := s.saveAccountStateLocked(account, password, config.Int64Value(uid), accessKey, result.UName, true, false)
+		saveErr := s.saveAccountStateLocked(account, password, rememberPassword, config.Int64Value(uid), accessKey, result.UName, true, false)
 		s.mu.Unlock()
 		if saveErr != nil {
 			return result, saveErr
@@ -1410,7 +1412,7 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 	result.SessionReady = true
 
 	s.mu.Lock()
-	saveErr := s.saveAccountStateLocked(account, password, 0, accessKey, result.UName, true, true)
+	saveErr := s.saveAccountStateLocked(account, password, rememberPassword, 0, accessKey, result.UName, true, true)
 	s.mu.Unlock()
 	if saveErr != nil {
 		return result, saveErr
@@ -1434,18 +1436,18 @@ func (s *Service) login(ctx context.Context, account, password string, cap map[s
 }
 
 func (s *Service) handleCaptchaResult(payload map[string]any) {
-	account, password, ok := s.pendingCredentials()
+	account, password, rememberPassword, ok := s.pendingCredentials()
 	if !ok {
 		s.logf("captcha callback received but account credentials are missing")
 		return
 	}
 
-	go func(account string, password []byte) {
+	go func(account string, password []byte, rememberPassword bool) {
 		defer wipeBytes(password)
-		if _, err := s.login(context.Background(), account, string(password), payload, false); err != nil {
+		if _, err := s.login(context.Background(), account, string(password), rememberPassword, payload, false); err != nil {
 			s.logf("captcha login continuation failed: %v", err)
 		}
-	}(account, password)
+	}(account, password, rememberPassword)
 }
 
 func (s *Service) setError(err error) {
@@ -1703,15 +1705,19 @@ func (s *Service) prepareBSGameSDK(ctx context.Context, accountHint string) erro
 	runtimeProfile := bridge.RuntimeProfile{}
 	cfg := s.Config()
 	if strings.TrimSpace(cfg.LoaderAPIBaseURL) != "" {
-		s.beginAPIInteraction()
-		profile, profileErr := bridge.FetchRuntimeProfile(ctx, cfg.LoaderAPIBaseURL, bridge.ClientMetaForBaseURL(cfg.LoaderAPIBaseURL))
-		s.endAPIInteraction()
-		if profileErr != nil {
+		if s.shouldDeferRuntimeProfileFetch(cfg.LoaderAPIBaseURL) {
 			s.setAPIReady(false)
-			s.logf("runtime profile fetch failed; using fallback sdk constants: %v", profileErr)
 		} else {
-			s.setAPIReady(true)
-			runtimeProfile = profile
+			s.beginAPIInteraction()
+			profile, profileErr := bridge.FetchRuntimeProfile(ctx, cfg.LoaderAPIBaseURL, bridge.ClientMetaForBaseURL(cfg.LoaderAPIBaseURL))
+			s.endAPIInteraction()
+			if profileErr != nil {
+				s.setAPIReady(false)
+				s.logf("runtime profile fetch failed; using fallback sdk constants: %v", profileErr)
+			} else {
+				s.setAPIReady(true)
+				runtimeProfile = profile
+			}
 		}
 	}
 
@@ -1742,6 +1748,17 @@ func (s *Service) prepareBSGameSDK(ctx context.Context, accountHint string) erro
 		},
 	)
 	return nil
+}
+
+func (s *Service) shouldDeferRuntimeProfileFetch(baseURL string) bool {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		return false
+	}
+	if !isLoopbackLoaderAPI(baseURL) {
+		return false
+	}
+	return s.isRuntimePreparing()
 }
 
 func (s *Service) ensureLocalDeviceProfile(accountHint string) (config.DeviceProfile, error) {
@@ -1880,13 +1897,14 @@ func wipeBytes(data []byte) {
 	}
 }
 
-func (s *Service) storePendingCredentials(account, password string) {
+func (s *Service) storePendingCredentials(account, password string, rememberPassword bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pendingPasswordGen++
 	s.clearPendingCredentialsLocked()
 	s.pendingAccount = strings.TrimSpace(account)
 	s.pendingPassword = append([]byte(nil), []byte(password)...)
+	s.pendingRememberPass = rememberPassword
 	s.pendingPasswordTTL = time.Now().Add(pendingCredentialTTL)
 	gen := s.pendingPasswordGen
 	s.pendingPasswordTmr = time.AfterFunc(pendingCredentialTTL, func() {
@@ -1911,21 +1929,22 @@ func (s *Service) clearPendingCredentialsLocked() {
 	}
 	s.pendingPassword = nil
 	s.pendingAccount = ""
+	s.pendingRememberPass = false
 	s.pendingPasswordTTL = time.Time{}
 }
 
-func (s *Service) pendingCredentials() (string, []byte, bool) {
+func (s *Service) pendingCredentials() (string, []byte, bool, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if strings.TrimSpace(s.pendingAccount) == "" || len(s.pendingPassword) == 0 {
-		return "", nil, false
+		return "", nil, false, false
 	}
 	if !s.pendingPasswordTTL.IsZero() && time.Now().After(s.pendingPasswordTTL) {
 		s.clearPendingCredentialsLocked()
-		return "", nil, false
+		return "", nil, false, false
 	}
 	password := append([]byte(nil), s.pendingPassword...)
-	return s.pendingAccount, password, true
+	return s.pendingAccount, password, s.pendingRememberPass, true
 }
 
 func (s *Service) expirePendingCredentials(generation uint64) {

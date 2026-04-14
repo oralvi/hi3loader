@@ -3,8 +3,6 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -12,13 +10,14 @@ import (
 const DefaultAsteriskName = "HI3LoaderV1"
 
 type SavedAccount struct {
-	Account       string        `json:"account"`
-	Password      string        `json:"-"`
-	UID           int64         `json:"uid,omitempty"`
-	AccessKey     string        `json:"-"`
-	UName         string        `json:"uname,omitempty"`
-	LastLoginSucc bool          `json:"last_login_succ,omitempty"`
-	DeviceProfile DeviceProfile `json:"-"`
+	Account          string        `json:"account"`
+	Password         string        `json:"-"`
+	RememberPassword bool          `json:"-"`
+	UID              int64         `json:"uid,omitempty"`
+	AccessKey        string        `json:"-"`
+	UName            string        `json:"uname,omitempty"`
+	LastLoginSucc    bool          `json:"last_login_succ,omitempty"`
+	DeviceProfile    DeviceProfile `json:"-"`
 }
 
 type DeviceProfile struct {
@@ -62,65 +61,21 @@ func Default() *Config {
 }
 
 func LoadOrCreate(path string) (*Config, error) {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		cfg := Default()
-		cfg.Normalize()
-		if err := Save(path, cfg); err != nil {
-			return nil, err
-		}
-		cfg.AccountLogin = false
-		return cfg, nil
-	}
-
-	data, err := os.ReadFile(path)
+	codec, err := NewDefaultCodec()
 	if err != nil {
-		return nil, fmt.Errorf("read config: %w", err)
+		return nil, err
 	}
-
-	cfg, err := decodeStoredConfig(data)
-	if err != nil {
-		if backupErr := backupCorruptConfig(path, data); backupErr != nil {
-			return nil, fmt.Errorf("backup corrupt config: %w", backupErr)
-		}
-		if cfg == nil {
-			cfg = Default()
-		}
-		cfg.Normalize()
-		if err := Save(path, cfg); err != nil {
-			return nil, err
-		}
-		cfg.AccountLogin = false
-		return cfg, nil
-	}
-	cfg.AccountLogin = false
-	if cfg.Normalize() {
-		if err := Save(path, cfg); err != nil {
-			return nil, err
-		}
-	}
-	return cfg, nil
+	defer codec.Close()
+	return codec.LoadOrCreate(path)
 }
 
 func Save(path string, cfg *Config) error {
-	if cfg == nil {
-		return fmt.Errorf("save config: config is nil")
-	}
-	cfg.Normalize()
-	stored, err := encodeStoredConfig(cfg)
+	codec, err := NewDefaultCodec()
 	if err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(stored, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil && filepath.Dir(path) != "." {
-		return fmt.Errorf("create config dir: %w", err)
-	}
-	if err := AtomicWriteFile(path, data, 0o600); err != nil {
-		return fmt.Errorf("write config: %w", err)
-	}
-	return nil
+	defer codec.Close()
+	return codec.Save(path, cfg)
 }
 
 func (c *Config) Clone() *Config {

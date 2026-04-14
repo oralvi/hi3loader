@@ -55,8 +55,8 @@ func (a *App) UpdateBackground(backgroundPath string, opacity float64) (service.
 	return a.svc.UpdateBackground(strings.TrimSpace(backgroundPath), opacity)
 }
 
-func (a *App) Login(account, password string) (service.LoginResult, error) {
-	return a.svc.Login(context.Background(), strings.TrimSpace(account), password, false)
+func (a *App) Login(account, password string, rememberPassword bool) (service.LoginResult, error) {
+	return a.svc.Login(context.Background(), strings.TrimSpace(account), password, rememberPassword, false)
 }
 
 func (a *App) SelectSavedAccount(account string) (service.State, error) {

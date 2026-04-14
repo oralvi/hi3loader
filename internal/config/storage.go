@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -23,10 +24,6 @@ var allowedConfigKeys = map[string]struct{}{
 	"device_blob":         {},
 }
 
-type storedConfig struct {
-	Config
-}
-
 type storedConfigJSON struct {
 	CurrentAccount    string                   `json:"current_account,omitempty"`
 	SleepTime         int                      `json:"sleep_time"`
@@ -44,15 +41,16 @@ type storedConfigJSON struct {
 }
 
 type storedSavedAccountJSON struct {
-	Account       string `json:"account"`
-	SessionBlob   string `json:"session_blob,omitempty"`
-	UID           int64  `json:"uid,omitempty"`
-	UName         string `json:"uname,omitempty"`
-	LastLoginSucc bool   `json:"last_login_succ,omitempty"`
+	Account           string `json:"account"`
+	SessionBlob       string `json:"session_blob,omitempty"`
+	RememberPassword  bool   `json:"remember_password,omitempty"`
+	EncryptedPassword []byte `json:"encrypted_password,omitempty"`
+	UID               int64  `json:"uid,omitempty"`
+	UName             string `json:"uname,omitempty"`
+	LastLoginSucc     bool   `json:"last_login_succ,omitempty"`
 }
 
 type sessionSecretEnvelope struct {
-	Password  string                `json:"password,omitempty"`
 	AccessKey string                `json:"access_key,omitempty"`
 	Device    *deviceSecretEnvelope `json:"device,omitempty"`
 }
@@ -71,49 +69,44 @@ type deviceSecretEnvelope struct {
 	CurBuvid        string `json:"cur_buvid,omitempty"`
 }
 
-func (s storedConfig) MarshalJSON() ([]byte, error) {
-	accounts, err := encodeStoredSavedAccounts(s.Accounts)
-	if err != nil {
-		return nil, err
-	}
-	deviceBlob, err := encodeStoredDeviceProfile(s.DeviceProfile)
-	if err != nil {
-		return nil, err
-	}
-	payload := storedConfigJSON{
-		CurrentAccount:    normalizeString(s.CurrentAccount),
-		SleepTime:         s.SleepTime,
-		AutoClose:         s.AutoClose,
-		GamePath:          normalizeString(s.GamePath),
-		LauncherPath:      normalizeString(s.LauncherPath),
-		AsteriskName:      normalizeString(s.AsteriskName),
-		Accounts:          accounts,
-		AutoWindowCapture: s.AutoWindowCapture,
-		LoaderAPIBaseURL:  normalizeString(s.LoaderAPIBaseURL),
-		BackgroundImage:   normalizeString(s.BackgroundImage),
-		BackgroundOpacity: s.BackgroundOpacity,
-		PanelBlur:         s.PanelBlur,
-		DeviceBlob:        deviceBlob,
-	}
-	return json.Marshal(payload)
-}
-
-func encodeStoredConfig(cfg *Config) (*storedConfig, error) {
+func (c *Codec) encodeStoredConfig(cfg *Config) (*storedConfigJSON, error) {
 	clone := cfg.Clone()
 	if clone == nil {
 		return nil, fmt.Errorf("encode config: config is nil")
 	}
-	return &storedConfig{Config: *clone}, nil
+	accounts, err := c.encodeStoredSavedAccounts(clone.Accounts)
+	if err != nil {
+		return nil, err
+	}
+	deviceBlob, err := c.encodeStoredDeviceProfile(clone.DeviceProfile)
+	if err != nil {
+		return nil, err
+	}
+	return &storedConfigJSON{
+		CurrentAccount:    normalizeString(clone.CurrentAccount),
+		SleepTime:         clone.SleepTime,
+		AutoClose:         clone.AutoClose,
+		GamePath:          normalizeString(clone.GamePath),
+		LauncherPath:      normalizeString(clone.LauncherPath),
+		AsteriskName:      normalizeString(clone.AsteriskName),
+		Accounts:          accounts,
+		AutoWindowCapture: clone.AutoWindowCapture,
+		LoaderAPIBaseURL:  normalizeString(clone.LoaderAPIBaseURL),
+		BackgroundImage:   normalizeString(clone.BackgroundImage),
+		BackgroundOpacity: clone.BackgroundOpacity,
+		PanelBlur:         clone.PanelBlur,
+		DeviceBlob:        deviceBlob,
+	}, nil
 }
 
-func decodeStoredConfig(raw []byte) (*Config, error) {
+func (c *Codec) decodeStoredConfig(raw []byte) (*Config, bool, error) {
 	var rawMap map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &rawMap); err != nil {
-		return nil, fmt.Errorf("decode config: %w", err)
+		return nil, false, fmt.Errorf("decode config: %w", err)
 	}
 	for key := range rawMap {
 		if _, ok := allowedConfigKeys[key]; !ok {
-			return nil, fmt.Errorf("decode config: unsupported key %q", key)
+			return nil, false, fmt.Errorf("decode config: unsupported key %q", key)
 		}
 	}
 
@@ -124,11 +117,11 @@ func decodeStoredConfig(raw []byte) (*Config, error) {
 		PanelBlur:         Default().PanelBlur,
 	}
 	if err := json.Unmarshal(raw, &stored); err != nil {
-		return nil, fmt.Errorf("decode config: %w", err)
+		return nil, false, fmt.Errorf("decode config: %w", err)
 	}
-	accounts, err := decodeStoredSavedAccounts(stored.Accounts)
+	accounts, migrated, err := c.decodeStoredSavedAccounts(stored.Accounts)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	return &Config{
 		CurrentAccount:    stored.CurrentAccount,
@@ -143,8 +136,8 @@ func decodeStoredConfig(raw []byte) (*Config, error) {
 		BackgroundImage:   stored.BackgroundImage,
 		BackgroundOpacity: stored.BackgroundOpacity,
 		PanelBlur:         stored.PanelBlur,
-		DeviceProfile:     decodeStoredDeviceProfile(stored.DeviceBlob),
-	}, nil
+		DeviceProfile:     c.decodeStoredDeviceProfile(stored.DeviceBlob),
+	}, migrated, nil
 }
 
 func backupCorruptConfig(path string, data []byte) error {
@@ -155,13 +148,13 @@ func backupCorruptConfig(path string, data []byte) error {
 	return AtomicWriteFile(backupPath, data, 0o600)
 }
 
-func encodeStoredSavedAccounts(accounts []SavedAccount) ([]storedSavedAccountJSON, error) {
+func (c *Codec) encodeStoredSavedAccounts(accounts []SavedAccount) ([]storedSavedAccountJSON, error) {
 	if len(accounts) == 0 {
 		return nil, nil
 	}
 	stored := make([]storedSavedAccountJSON, 0, len(accounts))
 	for _, entry := range accounts {
-		encoded, err := encodeStoredSavedAccount(entry)
+		encoded, err := c.encodeStoredSavedAccount(entry)
 		if err != nil {
 			return nil, err
 		}
@@ -170,18 +163,29 @@ func encodeStoredSavedAccounts(accounts []SavedAccount) ([]storedSavedAccountJSO
 	return stored, nil
 }
 
-func encodeStoredSavedAccount(entry SavedAccount) (storedSavedAccountJSON, error) {
+func (c *Codec) encodeStoredSavedAccount(entry SavedAccount) (storedSavedAccountJSON, error) {
 	stored := storedSavedAccountJSON{
-		Account:       normalizeString(entry.Account),
-		UID:           entry.UID,
-		UName:         normalizeString(entry.UName),
-		LastLoginSucc: entry.LastLoginSucc,
+		Account:          normalizeString(entry.Account),
+		RememberPassword: entry.RememberPassword,
+		UID:              entry.UID,
+		UName:            normalizeString(entry.UName),
+		LastLoginSucc:    entry.LastLoginSucc,
 	}
-	if strings.TrimSpace(entry.Password) == "" && strings.TrimSpace(entry.AccessKey) == "" && !entry.DeviceProfile.IsComplete() {
+	if entry.RememberPassword && strings.TrimSpace(entry.Password) != "" {
+		passwordRaw := []byte(normalizeString(entry.Password))
+		passwordBlob, err := c.secretStore.Protect(passwordRaw)
+		for i := range passwordRaw {
+			passwordRaw[i] = 0
+		}
+		if err != nil {
+			return stored, fmt.Errorf("protect password blob: %w", err)
+		}
+		stored.EncryptedPassword = passwordBlob
+	}
+	if strings.TrimSpace(entry.AccessKey) == "" && !entry.DeviceProfile.IsComplete() {
 		return stored, nil
 	}
 	secret := sessionSecretEnvelope{
-		Password:  normalizeString(entry.Password),
 		AccessKey: normalizeString(entry.AccessKey),
 	}
 	if envelope := newDeviceSecretEnvelope(entry.DeviceProfile); envelope != nil {
@@ -191,7 +195,7 @@ func encodeStoredSavedAccount(entry SavedAccount) (storedSavedAccountJSON, error
 	if err != nil {
 		return stored, fmt.Errorf("encode session blob: %w", err)
 	}
-	blob, err := protectSessionSecrets(raw)
+	blob, err := c.protectBlob(raw)
 	if err != nil {
 		return stored, fmt.Errorf("protect session blob: %w", err)
 	}
@@ -199,42 +203,65 @@ func encodeStoredSavedAccount(entry SavedAccount) (storedSavedAccountJSON, error
 	return stored, nil
 }
 
-func decodeStoredSavedAccounts(accounts []storedSavedAccountJSON) ([]SavedAccount, error) {
+func (c *Codec) decodeStoredSavedAccounts(accounts []storedSavedAccountJSON) ([]SavedAccount, bool, error) {
 	if len(accounts) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	decoded := make([]SavedAccount, 0, len(accounts))
+	migrated := false
 	for _, entry := range accounts {
-		account, err := decodeStoredSavedAccount(entry)
+		account, accountMigrated, err := c.decodeStoredSavedAccount(entry)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		decoded = append(decoded, account)
+		migrated = migrated || accountMigrated
 	}
-	return decoded, nil
+	return decoded, migrated, nil
 }
 
-func decodeStoredSavedAccount(entry storedSavedAccountJSON) (SavedAccount, error) {
+func (c *Codec) decodeStoredSavedAccount(entry storedSavedAccountJSON) (SavedAccount, bool, error) {
 	decoded := SavedAccount{
-		Account:       normalizeString(entry.Account),
-		UID:           entry.UID,
-		UName:         normalizeString(entry.UName),
-		LastLoginSucc: entry.LastLoginSucc,
+		Account:          normalizeString(entry.Account),
+		RememberPassword: entry.RememberPassword,
+		UID:              entry.UID,
+		UName:            normalizeString(entry.UName),
+		LastLoginSucc:    entry.LastLoginSucc,
+	}
+	migrated := false
+	if entry.RememberPassword && len(entry.EncryptedPassword) > 0 {
+		password, err := c.secretStore.Unprotect(entry.EncryptedPassword)
+		if err == nil {
+			decoded.Password = normalizeString(string(password))
+			for i := range password {
+				password[i] = 0
+			}
+		}
 	}
 	if strings.TrimSpace(entry.SessionBlob) == "" {
-		return decoded, nil
+		return decoded, migrated, nil
 	}
-	raw, err := unprotectSessionSecrets(entry.SessionBlob)
+	raw, err := c.unprotectBlob(entry.SessionBlob)
 	if err != nil {
 		decoded.LastLoginSucc = false
-		return decoded, nil
+		return decoded, migrated, nil
 	}
+	defer wipeBytes(raw)
 	var secret sessionSecretEnvelope
 	if err := json.Unmarshal(raw, &secret); err != nil {
 		decoded.LastLoginSucc = false
-		return decoded, nil
+		return decoded, migrated, nil
 	}
-	decoded.Password = normalizeString(secret.Password)
+	var legacy struct {
+		Password string `json:"password,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &legacy); err == nil && strings.TrimSpace(decoded.Password) == "" {
+		if password := normalizeString(legacy.Password); password != "" {
+			decoded.Password = password
+			decoded.RememberPassword = true
+			migrated = true
+		}
+	}
 	decoded.AccessKey = normalizeString(secret.AccessKey)
 	if secret.Device != nil {
 		decoded.DeviceProfile = deviceProfileFromSecretEnvelope(*secret.Device)
@@ -242,10 +269,10 @@ func decodeStoredSavedAccount(entry storedSavedAccountJSON) (SavedAccount, error
 	if decoded.AccessKey == "" {
 		decoded.LastLoginSucc = false
 	}
-	return decoded, nil
+	return decoded, migrated, nil
 }
 
-func encodeStoredDeviceProfile(profile DeviceProfile) (string, error) {
+func (c *Codec) encodeStoredDeviceProfile(profile DeviceProfile) (string, error) {
 	if !profile.IsComplete() {
 		return "", nil
 	}
@@ -253,21 +280,22 @@ func encodeStoredDeviceProfile(profile DeviceProfile) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("encode device blob: %w", err)
 	}
-	blob, err := protectSessionSecrets(raw)
+	blob, err := c.protectBlob(raw)
 	if err != nil {
 		return "", fmt.Errorf("protect device blob: %w", err)
 	}
 	return blob, nil
 }
 
-func decodeStoredDeviceProfile(blob string) DeviceProfile {
+func (c *Codec) decodeStoredDeviceProfile(blob string) DeviceProfile {
 	if strings.TrimSpace(blob) == "" {
 		return DeviceProfile{}
 	}
-	raw, err := unprotectSessionSecrets(blob)
+	raw, err := c.unprotectBlob(blob)
 	if err != nil {
 		return DeviceProfile{}
 	}
+	defer wipeBytes(raw)
 	var secret deviceSecretEnvelope
 	if err := json.Unmarshal(raw, &secret); err != nil {
 		return DeviceProfile{}
@@ -308,4 +336,26 @@ func deviceProfileFromSecretEnvelope(secret deviceSecretEnvelope) DeviceProfile 
 		UserProfileUDID: normalizeString(secret.UserProfileUDID),
 		CurBuvid:        normalizeString(secret.CurBuvid),
 	}
+}
+
+func (c *Codec) protectBlob(plaintext []byte) (string, error) {
+	if c == nil || c.secretStore == nil {
+		return "", fmt.Errorf("secret store is not configured")
+	}
+	blob, err := c.secretStore.Protect(plaintext)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(blob), nil
+}
+
+func (c *Codec) unprotectBlob(ciphertext string) ([]byte, error) {
+	if c == nil || c.secretStore == nil {
+		return nil, fmt.Errorf("secret store is not configured")
+	}
+	raw, err := base64.StdEncoding.DecodeString(ciphertext)
+	if err != nil {
+		return nil, fmt.Errorf("decode session blob: %w", err)
+	}
+	return c.secretStore.Unprotect(raw)
 }

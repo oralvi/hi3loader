@@ -80,6 +80,7 @@
   "auth.titleAdd": "Add Account",
   "auth.copy": "Sign in with an existing or selected account. Captcha will open automatically when required.",
   "auth.copyAdd": "Sign in with a new account. It will be saved after a successful login.",
+  "auth.rememberPassword": "Remember Password",
   "auth.status.none": "No account saved. Click to add one.",
   "auth.status.current": "Current account: {status}",
   "auth.status.captcha": "Captcha required",

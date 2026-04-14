@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"hi3loader/internal/loaderapiv1"
+	"hi3loader/internal/secrets"
 )
 
 const clientIdentityFileName = "module.identity"
@@ -28,28 +29,76 @@ type clientIdentityEnvelope struct {
 }
 
 var (
-	clientIdentityOnce sync.Once
-	clientIdentityInst *clientIdentity
-	clientIdentityErr  error
+	defaultIdentityManagerOnce sync.Once
+	defaultIdentityManagerInst *IdentityManager
+	defaultIdentityManagerErr  error
 )
 
-func loadClientIdentity() (*clientIdentity, error) {
-	clientIdentityOnce.Do(func() {
-		clientIdentityInst, clientIdentityErr = loadOrCreateClientIdentity()
-	})
-	return clientIdentityInst, clientIdentityErr
+type IdentityManager struct {
+	store    secrets.SecretStore
+	loadOnce sync.Once
+	identity *clientIdentity
+	loadErr  error
 }
 
-func loadOrCreateClientIdentity() (*clientIdentity, error) {
+func NewIdentityManager(store secrets.SecretStore) (*IdentityManager, error) {
+	if store == nil {
+		return nil, fmt.Errorf("identity manager requires a secret store")
+	}
+	return &IdentityManager{store: store}, nil
+}
+
+func NewDefaultIdentityManager() (*IdentityManager, error) {
+	store, err := secrets.NewDefaultStore()
+	if err != nil {
+		return nil, err
+	}
+	return NewIdentityManager(store)
+}
+
+func loadClientIdentity() (*clientIdentity, error) {
+	manager, err := defaultIdentityManager()
+	if err != nil {
+		return nil, err
+	}
+	return manager.Load()
+}
+
+func defaultIdentityManager() (*IdentityManager, error) {
+	defaultIdentityManagerOnce.Do(func() {
+		defaultIdentityManagerInst, defaultIdentityManagerErr = NewDefaultIdentityManager()
+	})
+	return defaultIdentityManagerInst, defaultIdentityManagerErr
+}
+
+func (m *IdentityManager) Close() error {
+	if m == nil || m.store == nil {
+		return nil
+	}
+	return m.store.Close()
+}
+
+func (m *IdentityManager) Load() (*clientIdentity, error) {
+	if m == nil {
+		return nil, fmt.Errorf("identity manager is nil")
+	}
+	m.loadOnce.Do(func() {
+		m.identity, m.loadErr = m.loadOrCreate()
+	})
+	return m.identity, m.loadErr
+}
+
+func (m *IdentityManager) loadOrCreate() (*clientIdentity, error) {
 	path, err := clientIdentityPath()
 	if err != nil {
 		return nil, err
 	}
 	if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
-		plaintext, err := unprotectClientIdentity(data)
+		plaintext, err := m.store.Unprotect(data)
 		if err != nil {
 			return nil, fmt.Errorf("unprotect client identity: %w", err)
 		}
+		defer wipeBytes(plaintext)
 		identity, err := decodeClientIdentity(plaintext)
 		if err != nil {
 			return nil, err
@@ -72,10 +121,12 @@ func loadOrCreateClientIdentity() (*clientIdentity, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode client identity: %w", err)
 	}
-	protected, err := protectClientIdentity(plaintext)
+	defer wipeBytes(plaintext)
+	protected, err := m.store.Protect(plaintext)
 	if err != nil {
 		return nil, fmt.Errorf("protect client identity: %w", err)
 	}
+	defer wipeBytes(protected)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create identity dir: %w", err)
 	}

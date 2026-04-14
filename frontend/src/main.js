@@ -380,6 +380,13 @@ document.querySelector("#app").innerHTML = `
             <input id="loginPasswordInput" type="password" autocomplete="new-password" placeholder="${t("settings.passwordPlaceholder")}" />
           </label>
         </div>
+        <label class="toggle toggle-compact auth-remember-toggle">
+          <input id="rememberPasswordInput" type="checkbox" />
+          <span class="toggle-control" aria-hidden="true"></span>
+          <span class="toggle-copy">
+            <strong>${t("auth.rememberPassword")}</strong>
+          </span>
+        </label>
         <div class="auth-actions">
           <button class="button button-solid" id="authCancelBtn" type="button">${t("common.close")}</button>
           <button class="button button-accent" id="authSubmitBtn" type="button">${t("common.login")}</button>
@@ -471,6 +478,7 @@ const elements = {
   authSubmitBtn: document.getElementById("authSubmitBtn"),
   loginAccountInput: document.getElementById("loginAccountInput"),
   loginPasswordInput: document.getElementById("loginPasswordInput"),
+  rememberPasswordInput: document.getElementById("rememberPasswordInput"),
 };
 
 const maxRenderedLogs = 300;
@@ -488,6 +496,7 @@ let authSheetContext = {
   baselineAccount: "",
   currentLoggedIn: false,
   hasStoredPassword: false,
+  rememberPassword: false,
 };
 const seenLogKeys = new Set();
 const autofillGuardNames = Object.freeze({
@@ -765,6 +774,13 @@ function syncAuthPasswordPlaceholder(cfg = latestConfigView) {
   elements.loginPasswordInput.value = "";
 }
 
+function syncRememberPasswordToggle(checked = false) {
+  if (!elements.rememberPasswordInput) {
+    return;
+  }
+  elements.rememberPasswordInput.checked = Boolean(checked);
+}
+
 function refreshAuthSubmitState(cfg = latestConfigView) {
   const draftAccount = String(elements.loginAccountInput.value ?? "").trim();
   const draftPassword = String(elements.loginPasswordInput.value ?? "").trim();
@@ -957,11 +973,13 @@ function openAuthSheet(mode = "existing") {
     baselineAccount: mode === "new" ? "" : currentAccount,
     currentLoggedIn: mode !== "new" && Boolean(cfg.account_login ?? cfg.accountLogin),
     hasStoredPassword: mode !== "new" && Boolean(cfg.has_password),
+    rememberPassword: mode !== "new" && Boolean(cfg.remember_password ?? cfg.rememberPassword),
   };
   elements.authTitle.textContent = mode === "new" ? t("auth.titleAdd") : t("auth.title");
   elements.authCopy.textContent = mode === "new" ? t("auth.copyAdd") : t("auth.copy");
   elements.loginAccountInput.value = mode === "new" ? "" : currentAccount;
   elements.loginPasswordInput.value = "";
+  syncRememberPasswordToggle(authSheetContext.rememberPassword);
   markSecretFieldClean("password");
   syncAuthPasswordPlaceholder(cfg);
   refreshAuthSubmitState(cfg);
@@ -983,8 +1001,10 @@ function closeAuthSheet() {
     baselineAccount: "",
     currentLoggedIn: false,
     hasStoredPassword: false,
+    rememberPassword: false,
   };
   elements.loginPasswordInput.value = "";
+  syncRememberPasswordToggle(false);
   markSecretFieldClean("password");
   syncAuthPasswordPlaceholder(latestConfigView);
   refreshAuthSubmitState(latestConfigView);
@@ -1792,6 +1812,7 @@ elements.loginAccountInput.addEventListener("input", () => {
     currentDraftAccount.toLowerCase() !== baselineAccount.toLowerCase();
   if (accountChanged) {
     elements.loginPasswordInput.value = "";
+    syncRememberPasswordToggle(false);
     markSecretFieldClean("password");
   }
   syncAuthPasswordPlaceholder(latestConfigView);
@@ -1809,7 +1830,7 @@ elements.loginPasswordInput.addEventListener("input", () => {
 });
 elements.authSubmitBtn.addEventListener("click", async () => {
   const result = await runTask(
-    () => Login(elements.loginAccountInput.value, elements.loginPasswordInput.value),
+    () => Login(elements.loginAccountInput.value, elements.loginPasswordInput.value, elements.rememberPasswordInput.checked),
     (value) => value,
     "neutral",
   );
@@ -1910,20 +1931,24 @@ Bootstrap()
       appendLog(entry);
     });
 
+    const bootState = latestState || state;
     appBootstrapped = true;
-    renderState(state);
+    renderState(bootState);
     refreshBackground().catch((error) => {
       showPayload(formatError(error), "error");
     });
-    if (!state.gamePathValid) {
-      showPayload(translateMessage(state.gamePathMessage, state.gamePathPrompt || t("status.selectPathFirst")), "warn");
+    if (!bootState.gamePathValid) {
+      showPayload(
+        translateMessage(bootState.gamePathMessage, bootState.gamePathPrompt || t("status.selectPathFirst")),
+        "warn",
+      );
       return;
     }
     queueGameUpdatePrompt("startup");
     showPayload(
         {
-          session: formatSessionStatus(state, state.config || {}).text,
-          api: formatAPIStatus(state, state.config || {}).text,
+          session: formatSessionStatus(bootState, bootState.config || {}).text,
+          api: formatAPIStatus(bootState, bootState.config || {}).text,
         },
         "soft",
     );

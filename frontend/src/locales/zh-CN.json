@@ -75,6 +75,7 @@
   "auth.titleAdd": "添加账号",
   "auth.copy": "使用当前或已选账号登录。需要验证码时会自动弹出验证页面。",
   "auth.copyAdd": "登录新账号。登录成功后会自动保存到账号列表。",
+  "auth.rememberPassword": "记住密码",
   "auth.status.none": "\u6682\u65e0\u5df2\u4fdd\u5b58\u8d26\u53f7\uff0c\u70b9\u51fb\u6dfb\u52a0\u3002",
   "auth.status.current": "\u5f53\u524d\u8d26\u53f7\u72b6\u6001\uff1a{status}",
   "auth.status.captcha": "\u9700\u8981\u9a8c\u8bc1\u7801",

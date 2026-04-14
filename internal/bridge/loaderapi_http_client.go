@@ -14,7 +14,6 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -28,8 +27,16 @@ import (
 )
 
 type loaderAPIClient struct {
-	baseURL string
+	baseURL         string
+	identityManager *IdentityManager
 }
+
+type loaderAPIDeployMode string
+
+const (
+	loaderAPIDeployLocal  loaderAPIDeployMode = "local"
+	loaderAPIDeployRemote loaderAPIDeployMode = "remote"
+)
 
 type loaderAPISession struct {
 	ID        string
@@ -58,6 +65,8 @@ const (
 	loaderAPISessionKeySize     = 32
 	loaderAPIManifestCacheTTL   = 30 * time.Second
 	loaderAPISessionDefaultTTL  = 90 * time.Second
+	loaderAPIHTTPMaxIdleConns   = 10
+	loaderAPIHTTPIdleTimeout    = 90 * time.Second
 )
 
 var loaderAPICache = struct {
@@ -69,27 +78,68 @@ var loaderAPICache = struct {
 	sessions:  map[string]loaderAPISessionCacheEntry{},
 }
 
+var loaderAPIHTTPClients sync.Map
+
 func newLoaderAPIClient(baseURL string) *loaderAPIClient {
+	return newLoaderAPIClientWithIdentityManager(baseURL, nil)
+}
+
+func newLoaderAPIClientWithIdentityManager(baseURL string, identityManager *IdentityManager) *loaderAPIClient {
 	return &loaderAPIClient{
-		baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"),
+		baseURL:         strings.TrimRight(strings.TrimSpace(baseURL), "/"),
+		identityManager: identityManager,
 	}
 }
 
-func newLoaderAPIHTTPClient(timeout, responseHeaderTimeout time.Duration, tlsConfig *tls.Config) *http.Client {
-	transport := &http.Transport{
-		Proxy: nil,
-		DialContext: (&net.Dialer{
-			Timeout: 10 * time.Second,
-		}).DialContext,
-		ResponseHeaderTimeout: responseHeaderTimeout,
-		TLSHandshakeTimeout:   10 * time.Second,
-		TLSClientConfig:       tlsConfig,
+func newLoaderAPIHTTPClient(baseURL string, deployMode loaderAPIDeployMode, allowTCPFallback bool, pinnedFingerprint string, tlsConfig *tls.Config) *http.Client {
+	cacheKey := strings.TrimSpace(baseURL) + "|" + string(deployMode) + "|" + fmt.Sprintf("%t", allowTCPFallback) + "|" + strings.TrimSpace(pinnedFingerprint)
+	if cached, ok := loaderAPIHTTPClients.Load(cacheKey); ok {
+		return cached.(*http.Client)
 	}
 
-	return &http.Client{
-		Timeout:   timeout,
+	clonedTLSConfig := tlsConfig
+	if tlsConfig != nil {
+		clonedTLSConfig = tlsConfig.Clone()
+	}
+	transport := &http.Transport{
+		Proxy:               nil,
+		DialContext:         newLoaderAPIDialContext(baseURL, deployMode, allowTCPFallback),
+		TLSHandshakeTimeout: 10 * time.Second,
+		TLSClientConfig:     clonedTLSConfig,
+		MaxIdleConns:        loaderAPIHTTPMaxIdleConns,
+		MaxIdleConnsPerHost: loaderAPIHTTPMaxIdleConns,
+		IdleConnTimeout:     loaderAPIHTTPIdleTimeout,
+	}
+
+	client := &http.Client{
 		Transport: transport,
 	}
+	actual, _ := loaderAPIHTTPClients.LoadOrStore(cacheKey, client)
+	return actual.(*http.Client)
+}
+
+func loaderAPIDeployModeForRequest(baseURL string, meta ClientMeta) loaderAPIDeployMode {
+	switch strings.ToLower(strings.TrimSpace(meta.TransportMode)) {
+	case string(loaderAPIDeployLocal):
+		return loaderAPIDeployLocal
+	case string(loaderAPIDeployRemote):
+		return loaderAPIDeployRemote
+	default:
+		if strings.EqualFold(strings.TrimSpace(transportModeForBaseURL(baseURL)), string(loaderAPIDeployRemote)) {
+			return loaderAPIDeployRemote
+		}
+		return loaderAPIDeployLocal
+	}
+}
+
+func withLoaderAPIRequestTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= timeout {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 
 func ProbeLoaderAPI(ctx context.Context, baseURL string, meta ClientMeta) error {
@@ -97,9 +147,7 @@ func ProbeLoaderAPI(ctx context.Context, baseURL string, meta ClientMeta) error 
 	if baseURL == "" {
 		return fmt.Errorf("missing loader_api_url")
 	}
-	client := &loaderAPIClient{
-		baseURL: strings.TrimRight(baseURL, "/"),
-	}
+	client := newLoaderAPIClient(baseURL)
 	_, err := client.Healthz(ctx, meta)
 	return err
 }
@@ -109,9 +157,7 @@ func FetchRuntimeProfile(ctx context.Context, baseURL string, meta ClientMeta) (
 	if baseURL == "" {
 		return RuntimeProfile{}, fmt.Errorf("missing loader_api_url")
 	}
-	client := &loaderAPIClient{
-		baseURL: strings.TrimRight(baseURL, "/"),
-	}
+	client := newLoaderAPIClient(baseURL)
 	resp, err := client.RuntimeProfile(ctx, meta)
 	if err != nil {
 		return RuntimeProfile{}, err
@@ -195,16 +241,20 @@ func (c *loaderAPIClient) validateBaseURL() error {
 	return nil
 }
 
-func (c *loaderAPIClient) performSealed(ctx context.Context, meta ClientMeta, timeout, headerTimeout time.Duration, path string, reqMsg, respMsg protoadapt.MessageV1) error {
-	manifest, err := c.resolveManifest(ctx, meta, timeout, headerTimeout, false)
+func (c *loaderAPIClient) performSealed(ctx context.Context, meta ClientMeta, timeout, _ time.Duration, path string, reqMsg, respMsg protoadapt.MessageV1) error {
+	attemptCtx, cancel := withLoaderAPIRequestTimeout(ctx, timeout)
+	manifest, err := c.resolveManifest(attemptCtx, meta, false)
 	if err != nil {
+		cancel()
 		return err
 	}
-	httpClient := newLoaderAPIHTTPClient(timeout, headerTimeout, pinnedTLSConfig(manifest))
-	session, err := c.handshake(ctx, httpClient, meta, manifest, false)
+	deployMode := loaderAPIDeployModeForRequest(c.baseURL, meta)
+	httpClient := newLoaderAPIHTTPClient(c.baseURL, deployMode, false, normalizeServerCertFingerprint(manifest.TlsCertSha256), pinnedTLSConfig(manifest))
+	session, err := c.handshake(attemptCtx, httpClient, meta, manifest, false)
 	if err == nil {
-		err = c.postSealed(ctx, httpClient, path, session, reqMsg, respMsg)
+		err = c.postSealed(attemptCtx, httpClient, path, session, reqMsg, respMsg)
 	}
+	cancel()
 	if err == nil {
 		return nil
 	}
@@ -212,29 +262,35 @@ func (c *loaderAPIClient) performSealed(ctx context.Context, meta ClientMeta, ti
 	c.invalidateSessionCache()
 	c.invalidateManifestCache()
 
-	manifest, refreshErr := c.resolveManifest(ctx, meta, timeout, headerTimeout, true)
+	retryCtx, retryCancel := withLoaderAPIRequestTimeout(ctx, timeout)
+	manifest, refreshErr := c.resolveManifest(retryCtx, meta, true)
 	if refreshErr != nil {
+		retryCancel()
 		return fmt.Errorf("%w; refresh manifest: %v", err, refreshErr)
 	}
-	httpClient = newLoaderAPIHTTPClient(timeout, headerTimeout, pinnedTLSConfig(manifest))
-	session, refreshErr = c.handshake(ctx, httpClient, meta, manifest, true)
+	httpClient = newLoaderAPIHTTPClient(c.baseURL, deployMode, false, normalizeServerCertFingerprint(manifest.TlsCertSha256), pinnedTLSConfig(manifest))
+	session, refreshErr = c.handshake(retryCtx, httpClient, meta, manifest, true)
 	if refreshErr != nil {
+		retryCancel()
 		return fmt.Errorf("%w; refresh handshake: %v", err, refreshErr)
 	}
-	if refreshErr = c.postSealed(ctx, httpClient, path, session, reqMsg, respMsg); refreshErr != nil {
+	if refreshErr = c.postSealed(retryCtx, httpClient, path, session, reqMsg, respMsg); refreshErr != nil {
+		retryCancel()
 		return fmt.Errorf("%w; retry request: %v", err, refreshErr)
 	}
+	retryCancel()
 	return nil
 }
 
-func (c *loaderAPIClient) resolveManifest(ctx context.Context, meta ClientMeta, timeout, headerTimeout time.Duration, forceRefresh bool) (*loaderapiv1.ManifestResponse, error) {
+func (c *loaderAPIClient) resolveManifest(ctx context.Context, meta ClientMeta, forceRefresh bool) (*loaderapiv1.ManifestResponse, error) {
 	if !forceRefresh {
 		if cached, ok := c.cachedManifest(); ok {
 			return cached, nil
 		}
 	}
 
-	httpClient := newLoaderAPIHTTPClient(timeout, headerTimeout, insecureManifestTLSConfig())
+	deployMode := loaderAPIDeployModeForRequest(c.baseURL, meta)
+	httpClient := newLoaderAPIHTTPClient(c.baseURL, deployMode, false, "manifest-insecure", insecureManifestTLSConfig())
 	req := &loaderapiv1.ManifestRequest{ClientMeta: toProtoClientMeta(meta)}
 	resp := &loaderapiv1.ManifestResponse{}
 	httpResp, err := c.postProto(ctx, httpClient, "/v1/session/manifest", req, resp)
@@ -274,7 +330,7 @@ func (c *loaderAPIClient) handshake(ctx context.Context, httpClient *http.Client
 	if err != nil {
 		return nil, fmt.Errorf("generate handshake nonce: %w", err)
 	}
-	identity, err := loadClientIdentity()
+	identity, err := c.loadClientIdentity()
 	if err != nil {
 		return nil, err
 	}
@@ -307,10 +363,12 @@ func (c *loaderAPIClient) handshake(ctx context.Context, httpClient *http.Client
 	if err != nil {
 		return nil, fmt.Errorf("derive handshake secret: %w", err)
 	}
+	defer wipeBytes(sharedSecret)
 	sessionKey, err := hkdf.Key(sha256.New, sharedSecret, append(append([]byte(nil), clientNonce...), resp.ServerNonce...), loaderAPIProtocolInfo, loaderAPISessionKeySize)
 	if err != nil {
 		return nil, fmt.Errorf("derive session key: %w", err)
 	}
+	defer wipeBytes(sessionKey)
 	expiresAt := time.Now().Add(loaderAPISessionDefaultTTL)
 	if resp.SessionExpiresUnixMs > 0 {
 		candidate := time.UnixMilli(resp.SessionExpiresUnixMs)
@@ -320,7 +378,7 @@ func (c *loaderAPIClient) handshake(ctx context.Context, httpClient *http.Client
 	}
 	session := &loaderAPISession{
 		ID:        strings.TrimSpace(resp.SessionID),
-		Key:       sessionKey,
+		Key:       append([]byte(nil), sessionKey...),
 		ExpiresAt: expiresAt,
 	}
 	c.storeSession(fingerprint, session)
@@ -332,6 +390,7 @@ func (c *loaderAPIClient) postProto(ctx context.Context, httpClient *http.Client
 	if err != nil {
 		return nil, fmt.Errorf("marshal protobuf request: %w", err)
 	}
+	defer wipeBytes(raw)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(raw))
 	if err != nil {
@@ -352,6 +411,7 @@ func (c *loaderAPIClient) postProto(ctx context.Context, httpClient *http.Client
 	if err != nil {
 		return nil, fmt.Errorf("read loader api %s response: %w", path, err)
 	}
+	defer wipeBytes(body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if len(body) > 0 {
 			return resp, fmt.Errorf("loader api %s returned %s: %s", path, resp.Status, strings.TrimSpace(string(body)))
@@ -364,6 +424,13 @@ func (c *loaderAPIClient) postProto(ctx context.Context, httpClient *http.Client
 	return resp, nil
 }
 
+func (c *loaderAPIClient) loadClientIdentity() (*clientIdentity, error) {
+	if c != nil && c.identityManager != nil {
+		return c.identityManager.Load()
+	}
+	return loadClientIdentity()
+}
+
 func (c *loaderAPIClient) postSealed(ctx context.Context, httpClient *http.Client, path string, session *loaderAPISession, reqMsg, respMsg protoadapt.MessageV1) error {
 	if session == nil || strings.TrimSpace(session.ID) == "" || len(session.Key) != loaderAPISessionKeySize {
 		return fmt.Errorf("loader api session is not ready")
@@ -373,6 +440,7 @@ func (c *loaderAPIClient) postSealed(ctx context.Context, httpClient *http.Clien
 	if err != nil {
 		return fmt.Errorf("marshal sealed request body: %w", err)
 	}
+	defer wipeBytes(raw)
 	nonce, err := randomBytes(loaderAPINonceSize)
 	if err != nil {
 		return fmt.Errorf("generate request nonce: %w", err)
@@ -395,6 +463,7 @@ func (c *loaderAPIClient) postSealed(ctx context.Context, httpClient *http.Clien
 	if err != nil {
 		return fmt.Errorf("open loader api response: %w", err)
 	}
+	defer wipeBytes(plaintext)
 	if err := proto.Unmarshal(plaintext, protoadapt.MessageV2Of(respMsg)); err != nil {
 		return fmt.Errorf("decode sealed protobuf response from %s: %w", path, err)
 	}
@@ -513,10 +582,12 @@ func (c *loaderAPIClient) cachedSession(fingerprint string) (*loaderAPISession, 
 		return nil, false
 	}
 	if entry.Fingerprint != fingerprint {
+		wipeLoaderAPISession(entry.Session)
 		delete(loaderAPICache.sessions, c.baseURL)
 		return nil, false
 	}
 	if entry.Session == nil || time.Now().After(entry.Session.ExpiresAt) {
+		wipeLoaderAPISession(entry.Session)
 		delete(loaderAPICache.sessions, c.baseURL)
 		return nil, false
 	}
@@ -526,6 +597,9 @@ func (c *loaderAPIClient) cachedSession(fingerprint string) (*loaderAPISession, 
 func (c *loaderAPIClient) storeSession(fingerprint string, session *loaderAPISession) {
 	loaderAPICache.mu.Lock()
 	defer loaderAPICache.mu.Unlock()
+	if existing, ok := loaderAPICache.sessions[c.baseURL]; ok {
+		wipeLoaderAPISession(existing.Session)
+	}
 	loaderAPICache.sessions[c.baseURL] = loaderAPISessionCacheEntry{
 		Session:     cloneSession(session),
 		Fingerprint: fingerprint,
@@ -535,6 +609,9 @@ func (c *loaderAPIClient) storeSession(fingerprint string, session *loaderAPISes
 func (c *loaderAPIClient) invalidateSessionCache() {
 	loaderAPICache.mu.Lock()
 	defer loaderAPICache.mu.Unlock()
+	if existing, ok := loaderAPICache.sessions[c.baseURL]; ok {
+		wipeLoaderAPISession(existing.Session)
+	}
 	delete(loaderAPICache.sessions, c.baseURL)
 }
 
@@ -556,6 +633,13 @@ func cloneSession(session *loaderAPISession) *loaderAPISession {
 		Key:       append([]byte(nil), session.Key...),
 		ExpiresAt: session.ExpiresAt,
 	}
+}
+
+func wipeLoaderAPISession(session *loaderAPISession) {
+	if session == nil {
+		return
+	}
+	wipeBytes(session.Key)
 }
 
 func toProtoClientMeta(meta ClientMeta) *loaderapiv1.ClientMeta {

@@ -20,6 +20,13 @@ import (
 //go:embed assets/*.html
 var embeddedTemplates embed.FS
 
+const (
+	captchaCallbackURLPlaceholder = "__CAPTCHA_CALLBACK_URL__"
+	captchaListenAddrPlaceholder  = "__CAPTCHA_LISTEN_ADDR__"
+	captchaStorageKeyPlaceholder  = "__CAPTCHA_STORAGE_KEY__"
+	captchaStorageKey             = "hi3loader_captcha_state"
+)
+
 type Server struct {
 	addr   string
 	server *http.Server
@@ -231,15 +238,21 @@ func (s *Server) injectRuntimeValues(body []byte) []byte {
 		return body
 	}
 
-	updated := strings.ReplaceAll(string(body), "http://127.0.0.1:12983/ret", "http://"+addr+"/ret")
+	callbackURL := "http://" + addr + "/ret"
 	s.mu.RLock()
 	state := s.expectedState
 	validState := state != "" && !s.expectedStateExpiry.IsZero() && time.Now().Before(s.expectedStateExpiry)
 	s.mu.RUnlock()
 	if validState {
-		updated = strings.ReplaceAll(updated, "http://"+addr+"/ret", "http://"+addr+"/ret?state="+url.QueryEscape(state))
+		callbackURL += "?state=" + url.QueryEscape(state)
 	}
+	updated := string(body)
+	updated = strings.ReplaceAll(updated, captchaCallbackURLPlaceholder, callbackURL)
+	updated = strings.ReplaceAll(updated, captchaListenAddrPlaceholder, addr)
+	updated = strings.ReplaceAll(updated, captchaStorageKeyPlaceholder, captchaStorageKey)
+	updated = strings.ReplaceAll(updated, "http://127.0.0.1:12983/ret", callbackURL)
 	updated = strings.ReplaceAll(updated, "127.0.0.1:12983", addr)
+	updated = strings.ReplaceAll(updated, "scanner_data", captchaStorageKey)
 	return []byte(updated)
 }
 

@@ -1,79 +1,110 @@
-<html>
+<!DOCTYPE html>
+<html lang="zh-CN">
 
 <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Verification</title>
+    <style>
+        :root {
+            color-scheme: light;
+            font-family: "Segoe UI Variable Text", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+        }
+
+        html,
+        body {
+            height: 100%;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            background:
+                radial-gradient(circle at top, rgba(255, 244, 216, 0.55), transparent 42%),
+                linear-gradient(180deg, rgba(250, 246, 240, 0.9), rgba(244, 238, 230, 0.82));
+        }
+
+        .shell {
+            width: min(100%, 620px);
+            height: 100vh;
+            padding: 16px;
+            box-sizing: border-box;
+        }
+
+        .geetest-frame {
+            width: 100%;
+            height: 100%;
+            border: 0;
+            border-radius: 28px;
+            background: rgba(255, 255, 255, 0.56);
+            box-shadow:
+                0 28px 56px rgba(92, 76, 66, 0.14),
+                inset 0 0 0 1px rgba(132, 108, 86, 0.1);
+            overflow: hidden;
+        }
+
+        @media (max-width: 640px) {
+            .shell {
+                padding: 10px;
+            }
+
+            .geetest-frame {
+                border-radius: 22px;
+            }
+        }
+    </style>
     <script>
-        function IEContentLoaded(w, fn) {
-            var d = w.document, done = false,
-                // only fire once
-                init = function () {
-                    if (!done) {
-                        done = true;
-                        fn();
-                    }
-                };
-            // polling for no errors
-            (function () {
-                try {
-                    // throws errors until after ondocumentready
-                    d.documentElement.doScroll('left');
-                } catch (e) {
-                    setTimeout(arguments.callee, 50);
-                    return;
-                }
-                // no errors, fire
-                init();
-            })();
-            // trying to always fire before onload
-            d.onreadystatechange = function () {
-                if (d.readyState == 'complete') {
-                    d.onreadystatechange = null;
-                    init();
-                }
-            };
-        }
-        function CloseWebPage() {
-            if (navigator.userAgent.indexOf("MSIE") > 0) {
-                if (navigator.userAgent.indexOf("MSIE 6.0") > 0) {
-                    window.opener = null;
-                    window.close();
-                } else {
-                    window.open('', '_top');
-                    window.top.close();
-                }
-            } else if (navigator.userAgent.indexOf("Firefox") > 0) {
-                window.location.href = 'about:blank ';
-            } else {
-                window.opener = null;
-                window.open('', '_self', '');
-                window.close();
+        const captchaStorageKey = "__CAPTCHA_STORAGE_KEY__";
+
+        function readState() {
+            try {
+                const raw = localStorage.getItem(captchaStorageKey);
+                return raw ? JSON.parse(raw) : null;
+            } catch (error) {
+                return null;
             }
         }
+
+        function writeState(state) {
+            localStorage.setItem(captchaStorageKey, JSON.stringify(state));
+        }
+
+        function closeWebPage() {
+            window.opener = null;
+            window.open("", "_self", "");
+            window.close();
+            window.location.replace("about:blank");
+        }
+
         function checkClose() {
-            if (localStorage.getItem('scanner_data') == null) return;
-            var data = JSON.parse(localStorage.getItem('scanner_data'));
-            if (data.needClose) {
-                CloseWebPage()
+            const data = readState();
+            if (data && data.needClose) {
+                closeWebPage();
             }
         }
-        IEContentLoaded(window, function () {
-            var data = {
+
+        window.addEventListener("DOMContentLoaded", () => {
+            writeState({
                 needClose: false,
                 needCap: true,
+            });
+
+            const iframe = document.getElementById("captcha-frame");
+            if (iframe) {
+                iframe.src = window.location.href.replace("/?", "/geetest?");
             }
-            localStorage.setItem('scanner_data', JSON.stringify(data));
-            var target_url = window.location.href.replace("/?", "/geetest?");
-            document.getElementsByClassName("geetest_frame")[0].src = target_url;
 
-            setInterval('checkClose()', 500);
+            window.setInterval(checkClose, 500);
         });
-
-
     </script>
-    <title>Geetest Local Page</title>
 </head>
 
 <body>
-    <iframe class="geetest_frame" style="width: 500px;height: 700px"></iframe>
+    <main class="shell">
+        <iframe id="captcha-frame" class="geetest-frame" title="captcha verification"></iframe>
+    </main>
 </body>
 
 </html>

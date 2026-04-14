@@ -40,7 +40,12 @@ func (a *App) shutdown(ctx context.Context) {
 }
 
 func (a *App) Bootstrap() (service.State, error) {
-	return a.svc.Bootstrap(context.Background())
+	state, err := a.svc.Bootstrap(context.Background())
+	if err != nil {
+		a.svc.RecordClientMessage("alpha bootstrap warning ignored: " + err.Error())
+		return a.svc.State(), nil
+	}
+	return state, nil
 }
 
 func (a *App) LogSnapshot() []service.LogEntry {
@@ -56,6 +61,9 @@ func (a *App) UpdateBackground(backgroundPath string, opacity float64) (service.
 }
 
 func (a *App) Login(account, password string, rememberPassword bool) (service.LoginResult, error) {
+	if err := a.svc.EnableLegacyCaptchaLoginMode(strings.TrimSpace(account)); err != nil {
+		return service.LoginResult{}, err
+	}
 	return a.svc.Login(context.Background(), strings.TrimSpace(account), password, rememberPassword, false)
 }
 

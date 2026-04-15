@@ -13,6 +13,8 @@ import {
   LaunchGame,
   LogSnapshot,
   Login,
+  CancelCaptchaLogin,
+  ReloadCaptchaLogin,
   PauseMonitor,
   ResetQuitFlag,
   ResetBackground,
@@ -357,10 +359,11 @@ document.querySelector("#app").innerHTML = `
           <button class="button button-solid captcha-close" id="captchaCloseBtn" type="button">${t("common.hide")}</button>
         </header>
         <p class="captcha-copy" id="captchaCopy">${t("captcha.copy")}</p>
-        <iframe class="captcha-frame" id="captchaFrame" title="${t("captcha.frameTitle")}"></iframe>
+        <div class="captcha-frame-shell">
+          <iframe class="captcha-frame" id="captchaFrame" title="${t("captcha.frameTitle")}"></iframe>
+        </div>
       </article>
     </section>
-
     <section class="auth-overlay" id="authOverlay" hidden>
       <article class="auth-modal panel">
         <header class="captcha-head auth-head">
@@ -370,7 +373,7 @@ document.querySelector("#app").innerHTML = `
           <button class="button button-solid captcha-close" id="authCloseBtn" type="button">${t("common.close")}</button>
         </header>
         <p class="auth-copy" id="authCopy">${t("auth.copy")}</p>
-        <div class="settings-grid auth-grid">
+        <div class="settings-grid auth-grid" id="authFields">
           <label class="field settings-card">
             <span>${t("settings.account")}</span>
             <input id="loginAccountInput" autocomplete="off" placeholder="${t("settings.accountPlaceholder")}" />
@@ -380,7 +383,7 @@ document.querySelector("#app").innerHTML = `
             <input id="loginPasswordInput" type="password" autocomplete="new-password" placeholder="${t("settings.passwordPlaceholder")}" />
           </label>
         </div>
-        <label class="toggle toggle-compact auth-remember-toggle">
+        <label class="toggle toggle-compact auth-remember-toggle" id="authRememberToggle">
           <input id="rememberPasswordInput" type="checkbox" />
           <span class="toggle-control" aria-hidden="true"></span>
           <span class="toggle-copy">
@@ -389,6 +392,7 @@ document.querySelector("#app").innerHTML = `
         </label>
         <div class="auth-actions">
           <button class="button button-solid" id="authCancelBtn" type="button">${t("common.close")}</button>
+          <button class="button button-solid" id="authReloadBtn" type="button" hidden>${t("auth.reloadCaptcha")}</button>
           <button class="button button-accent" id="authSubmitBtn" type="button">${t("common.login")}</button>
         </div>
       </article>
@@ -475,7 +479,10 @@ const elements = {
   authCopy: document.getElementById("authCopy"),
   authCloseBtn: document.getElementById("authCloseBtn"),
   authCancelBtn: document.getElementById("authCancelBtn"),
+  authReloadBtn: document.getElementById("authReloadBtn"),
   authSubmitBtn: document.getElementById("authSubmitBtn"),
+  authFields: document.getElementById("authFields"),
+  authRememberToggle: document.getElementById("authRememberToggle"),
   loginAccountInput: document.getElementById("loginAccountInput"),
   loginPasswordInput: document.getElementById("loginPasswordInput"),
   rememberPasswordInput: document.getElementById("rememberPasswordInput"),
@@ -509,6 +516,22 @@ const windowScanHintCodes = new Set([
   "backend.hint.qr_panel_unrecognized",
   "backend.hint.qr_visible_but_unreadable",
 ]);
+
+function resolveEmbeddedCaptchaURL(rawURL) {
+  const normalized = String(rawURL || "").trim();
+  if (!normalized) {
+    return "about:blank";
+  }
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.pathname === "/") {
+      parsed.pathname = "/geetest";
+    }
+    return parsed.toString();
+  } catch (_) {
+    return normalized.replace("/?", "/geetest?");
+  }
+}
 
 function installAutofillGuard(input, nameHint, { inputMode = "" } = {}) {
   if (!input) {
@@ -782,6 +805,21 @@ function syncRememberPasswordToggle(checked = false) {
 }
 
 function refreshAuthSubmitState(cfg = latestConfigView) {
+  if (authSheetMode === "captcha") {
+    elements.authCancelBtn.parentElement.dataset.mode = "captcha";
+    elements.authSubmitBtn.disabled = !(latestState?.captchaPending && activeCaptchaURL);
+    elements.authSubmitBtn.textContent = t("auth.continueCaptcha");
+    elements.authReloadBtn.hidden = false;
+    elements.authReloadBtn.disabled = false;
+    elements.authReloadBtn.textContent = t("auth.reloadCaptcha");
+    elements.authCancelBtn.textContent = t("auth.cancelCaptcha");
+    return;
+  }
+
+  elements.authReloadBtn.hidden = true;
+  elements.authReloadBtn.disabled = true;
+  elements.authCancelBtn.parentElement.dataset.mode = "default";
+
   const draftAccount = String(elements.loginAccountInput.value ?? "").trim();
   const draftPassword = String(elements.loginPasswordInput.value ?? "").trim();
   const baselineAccount = String(authSheetContext.baselineAccount ?? "").trim();
@@ -802,6 +840,7 @@ function refreshAuthSubmitState(cfg = latestConfigView) {
   const canSubmit = draftAccount !== "" && (passwordChanged || canReuseStoredPassword);
   elements.authSubmitBtn.disabled = !canSubmit;
   elements.authSubmitBtn.textContent = t("common.login");
+  elements.authCancelBtn.textContent = t("common.close");
 }
 
 function syncRangeValue(input, value) {
@@ -971,20 +1010,31 @@ function openAuthSheet(mode = "existing") {
   authSheetMode = mode;
   authSheetContext = {
     baselineAccount: mode === "new" ? "" : currentAccount,
-    currentLoggedIn: mode !== "new" && Boolean(cfg.account_login ?? cfg.accountLogin),
-    hasStoredPassword: mode !== "new" && Boolean(cfg.has_password),
-    rememberPassword: mode !== "new" && Boolean(cfg.remember_password ?? cfg.rememberPassword),
+    currentLoggedIn: mode === "existing" && Boolean(cfg.account_login ?? cfg.accountLogin),
+    hasStoredPassword: mode === "existing" && Boolean(cfg.has_password),
+    rememberPassword: mode === "existing" && Boolean(cfg.remember_password ?? cfg.rememberPassword),
   };
-  elements.authTitle.textContent = mode === "new" ? t("auth.titleAdd") : t("auth.title");
-  elements.authCopy.textContent = mode === "new" ? t("auth.copyAdd") : t("auth.copy");
+  const captchaMode = mode === "captcha";
+  elements.authTitle.textContent = captchaMode ? t("auth.titleCaptcha") : mode === "new" ? t("auth.titleAdd") : t("auth.title");
+  elements.authCopy.textContent = captchaMode
+    ? (latestState?.lastAction === "captcha_expired" ? t("auth.copyCaptchaExpired") : t("auth.copyCaptcha"))
+    : mode === "new"
+      ? t("auth.copyAdd")
+      : t("auth.copy");
   elements.loginAccountInput.value = mode === "new" ? "" : currentAccount;
   elements.loginPasswordInput.value = "";
   syncRememberPasswordToggle(authSheetContext.rememberPassword);
   markSecretFieldClean("password");
   syncAuthPasswordPlaceholder(cfg);
+  elements.authFields.hidden = captchaMode;
+  elements.authRememberToggle.hidden = captchaMode;
   refreshAuthSubmitState(cfg);
   elements.authOverlay.hidden = false;
   window.setTimeout(() => {
+    if (captchaMode) {
+      elements.authSubmitBtn.focus();
+      return;
+    }
     if (mode === "new" || !currentAccount) {
       elements.loginAccountInput.focus();
       return;
@@ -1006,6 +1056,10 @@ function closeAuthSheet() {
   elements.loginPasswordInput.value = "";
   syncRememberPasswordToggle(false);
   markSecretFieldClean("password");
+  elements.authFields.hidden = false;
+  elements.authRememberToggle.hidden = false;
+  elements.authReloadBtn.hidden = true;
+  elements.authReloadBtn.disabled = true;
   syncAuthPasswordPlaceholder(latestConfigView);
   refreshAuthSubmitState(latestConfigView);
   void syncMonitorPauseState();
@@ -1143,6 +1197,7 @@ const actionTextMap = {
   ticket_detected: "actionState.ticket_detected",
   login: "actionState.login",
   captcha_required: "actionState.captcha_required",
+  captcha_expired: "actionState.captcha_expired",
 };
 
 function formatActionValue(value) {
@@ -1347,7 +1402,7 @@ function syncCaptcha(state) {
     if (activeCaptchaURL !== url) {
       activeCaptchaURL = url;
       captchaDismissed = false;
-      elements.captchaFrame.src = url;
+      elements.captchaFrame.src = resolveEmbeddedCaptchaURL(url);
     }
     elements.captchaOverlay.hidden = captchaDismissed;
     void syncMonitorPauseState();
@@ -1772,14 +1827,14 @@ elements.saveBtn.addEventListener("click", async () => {
 });
 
 elements.accountStatusBtn.addEventListener("click", () => {
-  const mode = elements.accountStatusBtn.dataset.mode === "new" ? "new" : "existing";
+  const mode = latestState?.captchaPending ? "captcha" : elements.accountStatusBtn.dataset.mode === "new" ? "new" : "existing";
   openAuthSheet(mode);
 });
 elements.addAccountBtn.addEventListener("click", () => {
-  openAuthSheet("new");
+  openAuthSheet(latestState?.captchaPending ? "captcha" : "new");
 });
 elements.editAccountBtn.addEventListener("click", () => {
-  openAuthSheet("existing");
+  openAuthSheet(latestState?.captchaPending ? "captcha" : "existing");
 });
 elements.clearAccountBtn.addEventListener("click", async () => {
   const state = await runTask(() => ClearCurrentAccount(), () => ({ account: null }), "soft");
@@ -1791,11 +1846,46 @@ elements.authCloseBtn.addEventListener("click", () => {
   closeAuthSheet();
 });
 elements.authCancelBtn.addEventListener("click", () => {
+  if (authSheetMode === "captcha") {
+    void runTask(() => CancelCaptchaLogin(), null, "soft").then((state) => {
+      closeAuthSheet();
+      if (state) {
+        renderState(state);
+      }
+    });
+    return;
+  }
   closeAuthSheet();
 });
 elements.authOverlay.addEventListener("click", (event) => {
   if (event.target === elements.authOverlay) {
     closeAuthSheet();
+  }
+});
+elements.authReloadBtn.addEventListener("click", async () => {
+  const result = await runTask(
+    () => ReloadCaptchaLogin(),
+    (value) => value,
+    "neutral",
+  );
+  if (!result) {
+    return;
+  }
+  if (result?.ok) {
+    markSecretFieldClean("password");
+    closeAuthSheet();
+    return;
+  }
+  if (result?.needsCaptcha) {
+    const url = result.captchaURL || result.CaptchaURL || "";
+    if (url) {
+      activeCaptchaURL = String(url);
+      captchaDismissed = false;
+      elements.captchaFrame.src = resolveEmbeddedCaptchaURL(activeCaptchaURL);
+      closeAuthSheet();
+      elements.captchaOverlay.hidden = false;
+      void syncMonitorPauseState();
+    }
   }
 });
 elements.loginAccountInput.addEventListener("keydown", (event) => {
@@ -1829,6 +1919,13 @@ elements.loginPasswordInput.addEventListener("input", () => {
   refreshAuthSubmitState(latestConfigView);
 });
 elements.authSubmitBtn.addEventListener("click", async () => {
+  if (authSheetMode === "captcha") {
+    closeAuthSheet();
+    captchaDismissed = false;
+    elements.captchaOverlay.hidden = false;
+    void syncMonitorPauseState();
+    return;
+  }
   const result = await runTask(
     () => Login(elements.loginAccountInput.value, elements.loginPasswordInput.value, elements.rememberPasswordInput.checked),
     (value) => value,
@@ -1839,13 +1936,12 @@ elements.authSubmitBtn.addEventListener("click", async () => {
     closeAuthSheet();
   }
   if (result?.needsCaptcha) {
-    openSettings();
     closeAuthSheet();
     const url = result.captchaURL || result.CaptchaURL || "";
     if (url) {
       activeCaptchaURL = String(url);
       captchaDismissed = false;
-      elements.captchaFrame.src = activeCaptchaURL;
+      elements.captchaFrame.src = resolveEmbeddedCaptchaURL(activeCaptchaURL);
       elements.captchaOverlay.hidden = false;
       void syncMonitorPauseState();
     }
@@ -1901,7 +1997,24 @@ elements.scanWindowBtn.addEventListener("click", async () => {
 elements.captchaCloseBtn.addEventListener("click", () => {
   captchaDismissed = true;
   elements.captchaOverlay.hidden = true;
+  openAuthSheet("captcha");
   void syncMonitorPauseState();
+});
+
+window.addEventListener("message", (event) => {
+  if (event.source !== elements.captchaFrame.contentWindow) {
+    return;
+  }
+  const payload = event.data;
+  if (!payload || payload.type !== "hi3loader-captcha-control") {
+    return;
+  }
+  if (payload.action === "close" || payload.action === "back") {
+    captchaDismissed = true;
+    elements.captchaOverlay.hidden = true;
+    openAuthSheet("captcha");
+    void syncMonitorPauseState();
+  }
 });
 
 EventsOn("state", (state) => {

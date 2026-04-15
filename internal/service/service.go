@@ -568,6 +568,51 @@ func (s *Service) ResetQuitFlag() State {
 	return s.State()
 }
 
+func (s *Service) CancelCaptchaLogin() State {
+	clearChallengeState := false
+	shouldLog := false
+
+	s.mu.Lock()
+	if strings.TrimSpace(s.pendingAccount) != "" || len(s.pendingPassword) > 0 || s.captchaPending || s.captchaURL != "" {
+		s.pendingPasswordGen++
+		s.clearPendingCredentialsLocked()
+		if s.captchaPending || s.captchaURL != "" {
+			clearChallengeState = true
+		}
+		s.captchaPending = false
+		s.captchaURL = ""
+		if s.lastAction == "captcha_required" {
+			s.lastAction = "waiting_login"
+		}
+		s.lastError = ""
+		s.lastErrorMessage = MessageRef{}
+		shouldLog = true
+	}
+	s.mu.Unlock()
+
+	if clearChallengeState && s.server != nil {
+		s.server.ClearChallengeState()
+	}
+	if shouldLog {
+		s.logf("captcha login flow cancelled")
+	}
+	s.emitState()
+	return s.State()
+}
+
+func (s *Service) ReloadCaptchaLogin(ctx context.Context) (LoginResult, error) {
+	account, password, rememberPassword, ok := s.pendingCredentials()
+	if !ok {
+		return LoginResult{}, localizedErrorf("backend.error.credentials_required", nil, "account and password are required")
+	}
+	defer wipeBytes(password)
+
+	if err := s.prepareBSGameSDK(ctx, account); err != nil {
+		return LoginResult{}, err
+	}
+	return s.login(ctx, account, string(password), rememberPassword, nil, false)
+}
+
 func (s *Service) Login(ctx context.Context, account, password string, rememberPassword, openBrowser bool) (LoginResult, error) {
 	return s.login(ctx, account, password, rememberPassword, nil, openBrowser)
 }

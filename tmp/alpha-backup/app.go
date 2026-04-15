@@ -35,12 +35,17 @@ func (a *App) startup(ctx context.Context) {
 	})
 }
 
-func (a *App) shutdown(ctx context.Context) {
+func (a *App) shutdown(_ context.Context) {
 	_ = a.svc.Close(context.Background())
 }
 
 func (a *App) Bootstrap() (service.State, error) {
-	return a.svc.Bootstrap(context.Background())
+	state, err := a.svc.Bootstrap(context.Background())
+	if err != nil {
+		a.svc.RecordClientMessage("alpha bootstrap warning ignored: " + err.Error())
+		return a.svc.State(), nil
+	}
+	return state, nil
 }
 
 func (a *App) LogSnapshot() []service.LogEntry {

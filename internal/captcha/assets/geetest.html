@@ -2,15 +2,6 @@
 <html lang="zh-CN">
 
 <head>
-    <script>
-        var _hmt = _hmt || [];
-        (function () {
-            var hm = document.createElement("script");
-            hm.src = "https://hm.baidu.com/hm.js?2df1c7c2317b29ce3af103b66fec5e6e";
-            var s = document.getElementsByTagName("script")[0];
-            s.parentNode.insertBefore(hm, s);
-        })();
-    </script>
     <script src="https://apps.bdimg.com/libs/jquery/1.11.3/jquery.min.js"></script>
     <script>
         var myMeta = document.createElement("meta");
@@ -35,9 +26,185 @@
     <title>Geetest</title>
     <link rel="stylesheet" href="https://static.biligame.com/sdk/geetest/css/captcha.css?v=8bb7455f2.css"
         type="text/css">
+    <style>
+        html,
+        body {
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        body {
+            margin: 0 !important;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background:
+                radial-gradient(circle at top, rgba(255, 243, 211, 0.52), transparent 38%),
+                linear-gradient(180deg, rgba(249, 245, 239, 0.9), rgba(242, 236, 228, 0.84)) !important;
+            color: #424b5d;
+            font-family: "Segoe UI Variable Text", "Microsoft YaHei UI", "PingFang SC", sans-serif !important;
+        }
+
+        body.desktop-embed {
+            background: transparent !important;
+        }
+
+        body.desktop-embed .popup {
+            width: 100% !important;
+            height: 100% !important;
+            min-height: 0 !important;
+            max-height: none !important;
+            border-radius: 0 !important;
+            border: 0 !important;
+            background: transparent !important;
+            box-shadow: none !important;
+        }
+
+        body.desktop-embed .pop-head {
+            display: none !important;
+        }
+
+        body.desktop-embed .pop-con {
+            height: 100% !important;
+            padding: 0.85rem !important;
+            overflow: auto !important;
+            background: transparent !important;
+        }
+
+        body.desktop-embed .img-wrap {
+            width: min(100%, 7.8rem);
+            margin: 0 auto !important;
+        }
+
+        body.desktop-embed .pop-con .img-con {
+            margin-top: 0.35rem !important;
+            width: min(4.17rem, calc(100% - 1rem)) !important;
+        }
+
+        .load-wrap {
+            background: transparent !important;
+            box-shadow: none !important;
+        }
+
+        .load-word {
+            color: rgba(66, 75, 93, 0.26) !important;
+        }
+
+        .loading-img {
+            opacity: 0.2 !important;
+        }
+
+        .popup {
+            width: min(560px, calc(100vw - 32px)) !important;
+            height: min(620px, calc(100vh - 24px)) !important;
+            max-height: calc(100vh - 24px) !important;
+            max-width: none !important;
+            border-radius: 28px !important;
+            overflow: hidden !important;
+            border: 1px solid rgba(138, 113, 91, 0.14) !important;
+            background: rgba(255, 255, 255, 0.94) !important;
+            box-shadow:
+                0 28px 60px rgba(91, 75, 64, 0.16),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.45) !important;
+        }
+
+        .pop-head {
+            border-bottom: 1px solid rgba(138, 113, 91, 0.12) !important;
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.52), rgba(250, 244, 236, 0.2)) !important;
+        }
+
+        .tit-font {
+            color: #3f4758 !important;
+            font-weight: 700 !important;
+            letter-spacing: 0.04em !important;
+        }
+
+        .mask {
+            border-radius: 999px !important;
+        }
+
+        .close-btn path {
+            fill: #414a5b !important;
+            fill-opacity: 0.18 !important;
+        }
+
+        .pop-con {
+            background: transparent !important;
+            overflow: auto !important;
+        }
+
+        .img-con {
+            border-radius: 20px !important;
+            overflow: hidden !important;
+            box-shadow: inset 0 0 0 1px rgba(138, 113, 91, 0.12) !important;
+        }
+
+        .pop-con .img-con {
+            margin-left: auto !important;
+            margin-right: auto !important;
+        }
+
+        .pop-con .input-box,
+        .pop-con .btn {
+            width: min(7.2rem, calc(100% - 1rem)) !important;
+        }
+
+        .back-btn,
+        .close-btn {
+            cursor: pointer;
+        }
+
+        .input {
+            border-radius: 16px !important;
+            border: 1px solid rgba(138, 113, 91, 0.16) !important;
+            background: rgba(255, 255, 255, 0.82) !important;
+            color: #364152 !important;
+            box-shadow: none !important;
+        }
+
+        .btn {
+            border-radius: 16px !important;
+            background: linear-gradient(135deg, #c87342, #825047) !important;
+            box-shadow: none !important;
+        }
+
+        @media (max-width: 640px) {
+            .popup {
+                width: calc(100vw - 20px) !important;
+                border-radius: 22px !important;
+            }
+        }
+    </style>
 </head>
 
 <body base-width="900">
+    <script>
+        var isDesktopEmbed = window.self !== window.top && /(Windows|Macintosh|Linux)/i.test(navigator.userAgent);
+        function markDesktopEmbed() {
+            if (!document.body)
+                return;
+            -1 === document.body.className.indexOf("desktop-embed") && (document.body.className += " desktop-embed")
+        }
+        function setDesktopEmbedFontSize() {
+            var viewportWidth = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0)
+                , viewportHeight = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
+            if (!viewportWidth || !viewportHeight) {
+                document.documentElement.style.fontSize = "52px";
+                return;
+            }
+            var widthBased = viewportWidth / 12.5
+                , heightBased = viewportHeight / 10.5
+                , fontSize = Math.min(widthBased, heightBased, 56);
+            40 > fontSize && (fontSize = 40),
+                document.documentElement.style.fontSize = fontSize + "px";
+        }
+        if (isDesktopEmbed) {
+            document.addEventListener("DOMContentLoaded", markDesktopEmbed);
+            markDesktopEmbed();
+            window.addEventListener("resize", setDesktopEmbedFontSize);
+            setDesktopEmbedFontSize();
+        }
+    </script>
     <script>
         var widthVar = 0
             , heightVar = 0
@@ -54,12 +221,12 @@
                     document.getElementsByTagName("html")[0].style.fontSize = 100 * a + "px"
             }
         }
-        str && (ver = parseInt(str[1], 10)),
+        isDesktopEmbed || (str && (ver = parseInt(str[1], 10)),
             heightVar = ver <= 8 ? (widthVar = window.innerWidth,
                 window.innerHeight) : (widthVar = document.documentElement.clientWidth,
                     document.documentElement.clientHeight),
             -1 === navigator.userAgent.indexOf("Android") && (window.addEventListener("resize", setIosFontSize),
-                setIosFontSize())
+                setIosFontSize()))
     </script>
     <script>
         function setAndroidFontSize() {
@@ -67,8 +234,8 @@
             (n ? e = document.documentElement.clientWidth / n * 100 : i && (e = document.documentElement.clientHeight / i * 100),
                 e) && (document.getElementsByTagName("html")[0].style.fontSize = e + "px")
         }
-        -1 < navigator.userAgent.indexOf("Android") && (window.addEventListener("resize", setAndroidFontSize),
-            setAndroidFontSize())
+        isDesktopEmbed || (-1 < navigator.userAgent.indexOf("Android") && (window.addEventListener("resize", setAndroidFontSize),
+            setAndroidFontSize()))
     </script>
     <div class="load-wrap" id="load-wrap">
         <img src="https://static.biligame.com/sdk/geetest/img/loading.png?v=dc37001b.png" class="loading-img">
@@ -670,6 +837,37 @@
                 window.close();
             }
         }
+        function notifyHost(action) {
+            try {
+                window.parent && window.parent !== window && window.parent.postMessage({
+                    type: "hi3loader-captcha-control",
+                    action: action
+                }, "*")
+            } catch (e) { }
+        }
+        function dispatchChromeAction(action) {
+            if (ifNewJsObject)
+                return void window.webkit.messageHandlers.BiliJsObject.postMessage({
+                    method: "back" === action ? "goBackWithResult" : "finishWithResult",
+                    body: JSON.stringify({})
+                });
+            if ("undefined" != typeof BiliJsObject && BiliJsObject)
+                return void ("back" === action && BiliJsObject.goBackWithResult ? BiliJsObject.goBackWithResult(JSON.stringify({})) : "close" === action && BiliJsObject.finishWithResult && BiliJsObject.finishWithResult(JSON.stringify({})));
+            if (window.parent && window.parent !== window)
+                return void notifyHost(action);
+            "back" === action && 1 < window.history.length ? window.history.back() : CloseWebPage()
+        }
+        function getClassName(target) {
+            if (!target || !target.className)
+                return "";
+            return "object" == typeof target.className && "string" == typeof target.className.baseVal ? target.className.baseVal : String(target.className)
+        }
+        function hasClass(target, part) {
+            return -1 !== getClassName(target).indexOf(part)
+        }
+        function handleChromeButtons(e) {
+            hasClass(e.target, "mask-close") || hasClass(e.target, "close-btn") || "geetest_close" === getClassName(e.target) || hasClass(e.target, "geetest_panel_ghost") ? dispatchChromeAction("close") : hasClass(e.target, "mask-back") || hasClass(e.target, "back-btn") ? dispatchChromeAction("back") : 0
+        }
         function bookCallBack(e) {
             if (e) {
 
@@ -679,7 +877,7 @@
 
 
                     var xmlhttp = new XMLHttpRequest();
-                    var url = "http://127.0.0.1:12983/ret";
+                    var url = "__CAPTCHA_CALLBACK_URL__";
                     var data = {
                         challenge: e.challenge,
                         validate: e.validate,
@@ -694,13 +892,13 @@
                         needClose: false,
                         needCap: false,
                     }
-                    localStorage.setItem('scanner_data', JSON.stringify(data));
+                    localStorage.setItem('__CAPTCHA_STORAGE_KEY__', JSON.stringify(data));
                     setTimeout(() => {
-                        if (localStorage.getItem('scanner_data') == null) return;
-                        var data = JSON.parse(localStorage.getItem('scanner_data'));
+                        if (localStorage.getItem('__CAPTCHA_STORAGE_KEY__') == null) return;
+                        var data = JSON.parse(localStorage.getItem('__CAPTCHA_STORAGE_KEY__'));
                         if (!data.needCap) {
                             data.needClose = true;
-                            localStorage.setItem('scanner_data', JSON.stringify(data));
+                            localStorage.setItem('__CAPTCHA_STORAGE_KEY__', JSON.stringify(data));
                             CloseWebPage();
                         }
 
@@ -714,18 +912,9 @@
                 getParam("failed") && ToastObj.show("验证失败，请重试！")
         }
             ,
-            document.body.addEventListener("touchend", function (e) {
-                e.target.className && (-1 === e.target.className.indexOf("mask-close") && "geetest_close" !== e.target.className && -1 === e.target.className.indexOf("geetest_panel_ghost") || (
-                        ifNewJsObject ? window.webkit.messageHandlers.BiliJsObject.postMessage({
-                            method: "finishWithResult",
-                            body: JSON.stringify({})
-                        }) : BiliJsObject && BiliJsObject.finishWithResult && BiliJsObject.finishWithResult(JSON.stringify({}))),
-                        -1 !== e.target.className.indexOf("mask-back") && (ifNewJsObject ? window.webkit.messageHandlers.BiliJsObject.postMessage({
-                            method: "goBackWithResult",
-                            body: JSON.stringify({})
-                        }) : BiliJsObject && BiliJsObject.goBackWithResult && BiliJsObject.goBackWithResult(JSON.stringify({}))))
-            }),
-            document.body.addEventListener("touchmove", function (e) {
+            document.body.addEventListener("touchend", handleChromeButtons),
+            document.body.addEventListener("click", handleChromeButtons),
+            isDesktopEmbed || document.body.addEventListener("touchmove", function (e) {
                 e.preventDefault();
             });
 

@@ -10,6 +10,7 @@
 /node_modules/
 
 # Local runtime data
+/null/
 /config.json
 /logs/
 *.log

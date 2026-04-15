@@ -1269,8 +1269,8 @@ h2 {
   display: grid;
   place-items: center;
   padding: 1.5rem;
-  background: rgba(17, 24, 33, 0.42);
-  backdrop-filter: blur(var(--overlay-strong-blur));
+  background: transparent;
+  backdrop-filter: none;
 }
 
 .captcha-overlay[hidden] {
@@ -1284,8 +1284,8 @@ h2 {
   display: grid;
   place-items: center;
   padding: 1rem;
-  background: rgba(17, 24, 33, 0.18);
-  backdrop-filter: blur(calc(var(--overlay-blur) * 0.55));
+  background: transparent;
+  backdrop-filter: none;
 }
 
 .auth-overlay[hidden] {
@@ -1299,8 +1299,8 @@ h2 {
   display: grid;
   place-items: center;
   padding: 1rem;
-  background: rgba(17, 24, 33, 0.16);
-  backdrop-filter: blur(calc(var(--overlay-blur) * 0.55));
+  background: transparent;
+  backdrop-filter: none;
 }
 
 .update-overlay[hidden] {
@@ -1310,10 +1310,10 @@ h2 {
 .update-modal {
   width: min(30rem, calc(100vw - 2rem));
   padding: 1rem;
-  background: #f7efe5;
+  background: rgba(255, 255, 255, calc(var(--panel-alpha) * 0.88));
   border: 1px solid rgba(24, 33, 47, 0.14);
   box-shadow: 0 28px 56px rgba(17, 24, 33, 0.2);
-  backdrop-filter: none;
+  backdrop-filter: blur(calc(var(--panel-blur) * 0.95));
 }
 
 .update-modal::before {
@@ -1363,7 +1363,7 @@ h2 {
   padding: 0.72rem 0.84rem;
   border-radius: 1rem;
   border: 1px solid rgba(24, 33, 47, 0.12);
-  background: rgba(255, 250, 244, calc(var(--panel-alpha) * 0.88));
+  background: rgba(255, 255, 255, calc(var(--panel-alpha) * 0.72));
   color: #4a5566;
   font-size: 0.95rem;
   font-weight: 600;
@@ -1417,10 +1417,10 @@ h2 {
 .auth-modal {
   width: min(30rem, calc(100vw - 2rem));
   padding: 1rem;
-  background: #f7efe5;
+  background: rgba(255, 255, 255, calc(var(--panel-alpha) * 0.88));
   border: 1px solid rgba(24, 33, 47, 0.14);
   box-shadow: 0 28px 56px rgba(17, 24, 33, 0.2);
-  backdrop-filter: none;
+  backdrop-filter: blur(calc(var(--panel-blur) * 0.95));
 }
 
 .auth-modal::before {
@@ -1436,7 +1436,7 @@ h2 {
   padding: 0.72rem 0.84rem;
   border-radius: 1rem;
   border: 1px solid rgba(24, 33, 47, 0.12);
-  background: rgba(255, 250, 244, calc(var(--panel-alpha) * 0.88));
+  background: rgba(255, 255, 255, calc(var(--panel-alpha) * 0.62));
   color: #4a5566;
   font-size: 0.96rem;
   font-weight: 600;
@@ -1462,17 +1462,24 @@ h2 {
   gap: 0.6rem;
 }
 
+.auth-actions[data-mode="captcha"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .captcha-modal {
-  width: min(68rem, 100%);
-  min-height: min(48rem, calc(100vh - 3rem));
+  width: min(38rem, calc(100vw - 2rem));
+  min-height: 0;
+  max-height: calc(100vh - 3rem);
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
-  gap: 1rem;
-  padding: 1.25rem;
+  grid-template-rows: auto auto auto;
+  gap: 0.8rem;
+  padding: 1rem;
   border-radius: 1.5rem;
-  background: rgba(255, 251, 245, 0.98);
+  background: rgba(255, 255, 255, calc(var(--panel-alpha) * 0.9));
   border: 1px solid rgba(24, 33, 47, 0.12);
   box-shadow: 0 28px 60px rgba(17, 24, 33, 0.22);
+  backdrop-filter: blur(calc(var(--panel-blur) * 0.95));
+  align-content: start;
 }
 
 .captcha-head {
@@ -1491,11 +1498,22 @@ h2 {
 }
 
 .captcha-frame {
+  display: block;
   width: 100%;
-  min-height: 32rem;
+  height: 100%;
+  min-height: 100%;
+  border: 0;
+  background: transparent;
+}
+
+.captcha-frame-shell {
+  width: 100%;
+  height: min(27rem, calc(100vh - 10rem));
+  min-height: 21rem;
   border: 1px solid rgba(24, 33, 47, 0.12);
   border-radius: 1.15rem;
-  background: #fff;
+  background: rgba(255, 255, 255, 0.96);
+  overflow: hidden;
 }
 
 @media (max-width: 1100px) {
@@ -1572,10 +1590,10 @@ h2 {
   }
 
   .captcha-modal {
-    min-height: calc(100vh - 1.5rem);
-    padding: 1rem;
-    border-radius: 1rem;
-  }
+      max-height: calc(100vh - 1.5rem);
+      padding: 1rem;
+      border-radius: 1rem;
+    }
 
   .captcha-head {
     align-items: flex-start;
@@ -1592,7 +1610,8 @@ h2 {
     grid-template-columns: 1fr;
   }
 
-  .captcha-frame {
-    min-height: 26rem;
+  .captcha-frame-shell {
+    height: min(26rem, calc(100vh - 12rem));
+    min-height: 20rem;
   }
 }

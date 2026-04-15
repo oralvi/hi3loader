@@ -359,7 +359,9 @@ document.querySelector("#app").innerHTML = `
           <button class="button button-solid captcha-close" id="captchaCloseBtn" type="button">${t("common.hide")}</button>
         </header>
         <p class="captcha-copy" id="captchaCopy">${t("captcha.copy")}</p>
-        <iframe class="captcha-frame" id="captchaFrame" title="${t("captcha.frameTitle")}"></iframe>
+        <div class="captcha-frame-shell">
+          <iframe class="captcha-frame" id="captchaFrame" title="${t("captcha.frameTitle")}"></iframe>
+        </div>
       </article>
     </section>
     <section class="auth-overlay" id="authOverlay" hidden>

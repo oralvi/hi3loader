@@ -5,8 +5,6 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root = (Resolve-Path (Join-Path $scriptDir "..\..")).Path
 $alphaApp = Join-Path $scriptDir "app.go"
 $rootApp = Join-Path $root "app.go"
-$alphaServicePreview = Join-Path $scriptDir "internal_service_legacy_captcha.go"
-$rootServicePreview = Join-Path $root "internal\\service\\captcha_alpha.go"
 $tempBackup = Join-Path $scriptDir "app.release.backup.go"
 $output = Join-Path $scriptDir "hi3loader-alpha.exe"
 $alphaConfigPath = Join-Path $scriptDir "config.json"
@@ -19,15 +17,10 @@ if (-not (Test-Path -LiteralPath $rootApp)) {
 	throw "root app.go not found: $rootApp"
 }
 
-if (-not (Test-Path -LiteralPath $alphaServicePreview)) {
-	throw "alpha service preview file not found: $alphaServicePreview"
-}
-
 Copy-Item -LiteralPath $rootApp -Destination $tempBackup -Force
 
 try {
 	Copy-Item -LiteralPath $alphaApp -Destination $rootApp -Force
-	Copy-Item -LiteralPath $alphaServicePreview -Destination $rootServicePreview -Force
 
 	Push-Location $root
 	try {
@@ -36,9 +29,6 @@ try {
 		Pop-Location
 	}
 } finally {
-	if (Test-Path -LiteralPath $rootServicePreview) {
-		Remove-Item -LiteralPath $rootServicePreview -Force -ErrorAction SilentlyContinue
-	}
 	if (Test-Path -LiteralPath $tempBackup) {
 		Copy-Item -LiteralPath $tempBackup -Destination $rootApp -Force
 		Remove-Item -LiteralPath $tempBackup -Force -ErrorAction SilentlyContinue

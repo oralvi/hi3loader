@@ -35,7 +35,7 @@ func (a *App) startup(ctx context.Context) {
 	})
 }
 
-func (a *App) shutdown(ctx context.Context) {
+func (a *App) shutdown(_ context.Context) {
 	_ = a.svc.Close(context.Background())
 }
 
@@ -61,9 +61,6 @@ func (a *App) UpdateBackground(backgroundPath string, opacity float64) (service.
 }
 
 func (a *App) Login(account, password string, rememberPassword bool) (service.LoginResult, error) {
-	if err := a.svc.EnableLegacyCaptchaLoginMode(strings.TrimSpace(account)); err != nil {
-		return service.LoginResult{}, err
-	}
 	return a.svc.Login(context.Background(), strings.TrimSpace(account), password, rememberPassword, false)
 }
 

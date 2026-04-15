@@ -50,11 +50,14 @@
         }
 
         body.desktop-embed .popup {
-            width: min(540px, calc(100vw - 24px)) !important;
-            height: auto !important;
+            width: 100% !important;
+            height: 100% !important;
             min-height: 0 !important;
             max-height: none !important;
-            border-radius: 24px !important;
+            border-radius: 0 !important;
+            border: 0 !important;
+            background: transparent !important;
+            box-shadow: none !important;
         }
 
         body.desktop-embed .pop-head {
@@ -62,9 +65,10 @@
         }
 
         body.desktop-embed .pop-con {
-            height: auto !important;
-            padding: 1rem 1rem 1.25rem !important;
+            height: 100% !important;
+            padding: 0.85rem !important;
             overflow: auto !important;
+            background: transparent !important;
         }
 
         body.desktop-embed .img-wrap {
@@ -78,11 +82,16 @@
         }
 
         .load-wrap {
-            background: rgba(250, 246, 240, 0.92) !important;
+            background: transparent !important;
+            box-shadow: none !important;
         }
 
         .load-word {
-            color: #5d6678 !important;
+            color: rgba(66, 75, 93, 0.26) !important;
+        }
+
+        .loading-img {
+            opacity: 0.2 !important;
         }
 
         .popup {
@@ -93,7 +102,7 @@
             border-radius: 28px !important;
             overflow: hidden !important;
             border: 1px solid rgba(138, 113, 91, 0.14) !important;
-            background: rgba(252, 248, 243, 0.92) !important;
+            background: rgba(255, 255, 255, 0.94) !important;
             box-shadow:
                 0 28px 60px rgba(91, 75, 64, 0.16),
                 inset 0 0 0 1px rgba(255, 255, 255, 0.45) !important;

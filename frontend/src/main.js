@@ -27,7 +27,7 @@ import {
   SelectSavedAccount,
   UpdateBackground,
 } from "../wailsjs/go/main/App";
-import { EventsOn, Quit } from "../wailsjs/runtime/runtime";
+import { EventsOn, Quit, WindowSetAlwaysOnTop } from "../wailsjs/runtime/runtime";
 
 const shellBaseWidth = 1440;
 const shellBaseHeight = 920;
@@ -1393,6 +1393,8 @@ function transitionUpdateDialogToManual() {
   });
 }
 
+let captchaTopmostActive = false;
+
 function syncCaptcha(state) {
   const pending = Boolean(state.captchaPending && state.captchaURL);
   const url = pending ? String(state.captchaURL) : "";
@@ -1404,12 +1406,21 @@ function syncCaptcha(state) {
       captchaDismissed = false;
       elements.captchaFrame.src = resolveEmbeddedCaptchaURL(url);
     }
+    if (!captchaTopmostActive) {
+      captchaTopmostActive = true;
+      window.addEventListener("blur", function unsetTopmost() {
+        WindowSetAlwaysOnTop(false);
+        captchaTopmostActive = false;
+        window.removeEventListener("blur", unsetTopmost);
+      });
+    }
     elements.captchaOverlay.hidden = captchaDismissed;
     void syncMonitorPauseState();
     return;
   }
 
   captchaDismissed = false;
+  captchaTopmostActive = false;
   elements.captchaOverlay.hidden = true;
   if (activeCaptchaURL) {
     activeCaptchaURL = "";

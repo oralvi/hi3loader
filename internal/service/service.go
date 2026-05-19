@@ -117,8 +117,9 @@ type ScanWindowResult struct {
 }
 
 type Hooks struct {
-	OnLog   func(LogEntry)
-	OnState func(State)
+	OnLog            func(LogEntry)
+	OnState          func(State)
+	OnFocusRequired  func()
 }
 
 type Service struct {
@@ -214,12 +215,21 @@ func (s *Service) SetHooks(h Hooks) {
 }
 
 func (s *Service) Bootstrap(ctx context.Context) (State, error) {
+	// ensureBundledModule BEFORE Start so runtimePreparing is set before
+	// monitorLoop launches — prevents the pipe race where the monitor calls
+	// prepareBSGameSDK before the loopback module is ready.
+	pending, moduleErr := s.ensureBundledModule(ctx)
+
 	if err := s.Start(); err != nil {
 		return State{}, err
 	}
-	if pending, err := s.ensureBundledModule(ctx); err != nil {
-		return s.State(), err
-	} else if pending {
+
+	if moduleErr != nil {
+		return s.State(), moduleErr
+	}
+
+	if pending {
+		go s.backgroundSessionCheck(context.Background())
 		return s.State(), nil
 	}
 
@@ -231,6 +241,7 @@ func (s *Service) Bootstrap(ctx context.Context) (State, error) {
 		s.logf("loader api probe failed: %v", err)
 	}
 
+	go s.backgroundSessionCheck(context.Background())
 	return s.State(), nil
 }
 
@@ -717,8 +728,12 @@ func (s *Service) EnsureSession(ctx context.Context) error {
 
 	if active.UID != 0 {
 		verifyUID := fmt.Sprintf("%d", active.UID)
-		if _, err := s.bili.GetUserInfo(ctx, verifyUID, active.AccessKey); err != nil {
+		info, err := s.bili.GetUserInfo(ctx, verifyUID, active.AccessKey)
+		if err != nil || config.StringValue(info["uname"]) == "" {
 			s.clearCachedSession("cached session verify failed; login required again")
+			if err == nil {
+				err = fmt.Errorf("cached bilibili session expired")
+			}
 			return err
 		}
 	}
@@ -733,6 +748,65 @@ func (s *Service) EnsureSession(ctx context.Context) error {
 
 	s.emitState()
 	return nil
+}
+
+func (s *Service) tryAutoReloginForScan(ctx context.Context) error {
+	s.mu.RLock()
+	active, _ := s.cfg.CurrentSavedAccount()
+	hasPassword := strings.TrimSpace(active.Password) != "" && active.RememberPassword
+	s.mu.RUnlock()
+
+	if !hasPassword {
+		return fmt.Errorf("no stored credentials for auto-relogin")
+	}
+
+	result, err := s.login(ctx, "", "", false, nil, false)
+	if err != nil {
+		return err
+	}
+	if result.NeedsCaptcha {
+		s.mu.RLock()
+		onFocus := s.hooks.OnFocusRequired
+		s.mu.RUnlock()
+		if onFocus != nil {
+			onFocus()
+		}
+		return fmt.Errorf("captcha required; complete verification and scan again")
+	}
+	if !result.SessionReady {
+		return fmt.Errorf("auto-relogin failed: %s", result.Message)
+	}
+	return nil
+}
+
+func (s *Service) backgroundSessionCheck(ctx context.Context) {
+	s.mu.RLock()
+	cfg := s.cfg.Clone()
+	s.mu.RUnlock()
+
+	active, ok := cfg.CurrentSavedAccount()
+	if !ok || strings.TrimSpace(active.AccessKey) == "" || active.UID == 0 {
+		return
+	}
+
+	verifyUID := fmt.Sprintf("%d", active.UID)
+	info, err := s.bili.GetUserInfo(ctx, verifyUID, active.AccessKey)
+	if err == nil && config.StringValue(info["uname"]) != "" {
+		s.mu.Lock()
+		s.cfg.AccountLogin = true
+		saveErr := config.Save(s.cfgPath, s.cfg)
+		s.mu.Unlock()
+		if saveErr != nil {
+			s.logf("session check: failed to persist login state: %v", saveErr)
+		}
+		s.emitState()
+		return
+	}
+
+	s.clearCachedSession("startup session check: cached bilibili session expired")
+	if reloginErr := s.tryAutoReloginForScan(ctx); reloginErr != nil {
+		s.logf("startup session relogin: %v", reloginErr)
+	}
 }
 
 func (s *Service) clearCachedSession(reason string) {
@@ -798,7 +872,9 @@ func (s *Service) ScanTicket(ctx context.Context, ticket string) (ScanResult, er
 		return ScanResult{}, localizedErrorf("backend.error.ticket_required", nil, "ticket is required")
 	}
 	if err := s.EnsureSession(ctx); err != nil {
-		return ScanResult{}, err
+		if reloginErr := s.tryAutoReloginForScan(ctx); reloginErr != nil {
+			return ScanResult{}, err
+		}
 	}
 
 	s.mu.RLock()
@@ -931,6 +1007,11 @@ func (s *Service) pollAPIHealthOnce(parent context.Context) {
 		return
 	}
 	if s.isAPIInteractionActive() {
+		return
+	}
+	// While the bundled module is starting, skip probing to avoid spurious
+	// "pipe closed" errors against the stale loopback URL from config.
+	if s.isRuntimePreparing() {
 		return
 	}
 

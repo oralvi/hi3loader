@@ -51,7 +51,7 @@ func (m *moduleRuntime) exists() bool {
 	return err == nil && !info.IsDir()
 }
 
-func (m *moduleRuntime) ensureRunning(ctx context.Context) (string, error) {
+func (m *moduleRuntime) ensureRunning(ctx context.Context, hintEndpoint string) (string, error) {
 	if !m.exists() {
 		return "", nil
 	}
@@ -60,7 +60,7 @@ func (m *moduleRuntime) ensureRunning(ctx context.Context) (string, error) {
 		return endpoint, nil
 	}
 
-	endpoint, err := m.allocateEndpoint()
+	endpoint, err := m.allocateEndpoint(hintEndpoint)
 	if err != nil {
 		return "", err
 	}
@@ -219,7 +219,20 @@ func (m *moduleRuntime) currentEndpoint() (string, bool) {
 	return endpoint, endpoint != ""
 }
 
-func (m *moduleRuntime) allocateEndpoint() (string, error) {
+func (m *moduleRuntime) allocateEndpoint(hintURL string) (string, error) {
+	// Prefer the port already saved in config so the endpoint stays stable
+	// across restarts. Only fall back to a fresh random port if the hint port
+	// is occupied or not parseable.
+	if hintURL != "" {
+		if parsed, err := url.Parse(strings.TrimSpace(hintURL)); err == nil {
+			if hintPort := strings.TrimSpace(parsed.Port()); hintPort != "" {
+				if listener, err := net.Listen("tcp", net.JoinHostPort(moduleLoopbackHost, hintPort)); err == nil {
+					_ = listener.Close()
+					return fmt.Sprintf("https://%s:%s", moduleLoopbackHost, hintPort), nil
+				}
+			}
+		}
+	}
 	listener, err := net.Listen("tcp", net.JoinHostPort(moduleLoopbackHost, "0"))
 	if err != nil {
 		return "", fmt.Errorf("reserve module port: %w", err)
@@ -255,21 +268,35 @@ func (s *Service) ensureBundledModule(ctx context.Context) (bool, error) {
 		}
 		return false, nil
 	}
+
+	// If the saved config URL is a loopback address and already reachable, the
+	// module is still running from a previous session — reuse it without restarting.
+	s.mu.RLock()
+	savedURL := strings.TrimSpace(s.cfg.LoaderAPIBaseURL)
+	s.mu.RUnlock()
+	if savedURL != "" && isLoopbackLoaderAPI(savedURL) && s.module.endpointReachable(ctx, savedURL) {
+		s.module.mu.Lock()
+		s.module.endpoint = savedURL
+		s.module.mu.Unlock()
+		s.logf("reusing running bundled module at %s", savedURL)
+		return false, nil
+	}
+
 	if s.isRuntimePreparing() {
 		return true, nil
 	}
 
 	s.setRuntimePreparing(true)
 	s.logf("starting bundled runtime in background")
-	go s.bootstrapBundledModule(context.Background())
+	go s.bootstrapBundledModule(context.Background(), savedURL)
 	return true, nil
 }
 
-func (s *Service) bootstrapBundledModule(ctx context.Context) {
+func (s *Service) bootstrapBundledModule(ctx context.Context, hintEndpoint string) {
 	ctx, cancel := context.WithTimeout(ctx, moduleStartTimeout)
 	defer cancel()
 
-	endpoint, err := s.module.ensureRunning(ctx)
+	endpoint, err := s.module.ensureRunning(ctx, hintEndpoint)
 	if err != nil {
 		s.setRuntimePreparing(false)
 		s.setError(fmt.Errorf("start bundled runtime: %w", err))

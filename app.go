@@ -32,6 +32,11 @@ func (a *App) startup(ctx context.Context) {
 				runtime.EventsEmit(ctx, "quit-requested", state)
 			}
 		},
+		OnFocusRequired: func() {
+			runtime.WindowUnminimise(ctx)
+			runtime.WindowShow(ctx)
+			runtime.WindowSetAlwaysOnTop(ctx, true)
+		},
 	})
 }
 

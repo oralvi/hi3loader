@@ -2,6 +2,8 @@
 
 Portable Wails desktop utility for local workflows.
 
+> Final release: `v1.2.0`. This repository is archived after the final Windows x64 package is published.
+
 ## Overview
 
 - Windows desktop GUI built with Wails.
@@ -65,13 +67,15 @@ Use the development build script if you want a local package to test.
 Use the release script for packaged builds:
 
 ```powershell
+$env:LOADER_BUNDLE_ROOT = "..\rinki-hi3"
 .\scripts\build-release.ps1
 ```
 
 What the release script does:
 
 - builds with stripped symbol/debug metadata
-- produces the packaged GUI binary in `build/bin`
+- builds the matching bundled runtime
+- produces the final ZIP and SHA-256 files in `build/packages`
 - adds a release title stamp in the form `r<yyMMddHHmmss>`
 
 Release behavior:

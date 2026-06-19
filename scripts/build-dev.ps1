@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$baseVersion = "1.1.4"
+$baseVersion = "1.2.0"
 $bundlePrepareScript = $null
 $bundleBinaryRoot = $null
 if ($BundleRoot) {

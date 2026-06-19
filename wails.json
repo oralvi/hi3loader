@@ -9,5 +9,12 @@
   "author": {
     "name": "Oralvi Sakura",
     "email": "23415066+oralvi@users.noreply.github.com"
+  },
+  "info": {
+    "companyName": "Oralvi Sakura",
+    "productName": "HI3 Loader",
+    "productVersion": "1.2.0",
+    "copyright": "Copyright Oralvi Sakura",
+    "comments": "Final archived release"
   }
 }

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-var AppVersion = "1.1.4"
+var AppVersion = "1.2.0"
 var BuildStamp = ""
 var BuildFingerprint = ""
 
